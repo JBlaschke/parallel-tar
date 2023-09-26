@@ -63,18 +63,12 @@ fn main() {
     ];
     // Add work to the work channel.
     for work_item in & work_items {
-        // let (tx_work, _, _ , _) = chd.get();
         tx_work.send(work_item.to_string()).unwrap();
     }
 
-    // thread::sleep(Duration::from_millis(4000));
     drop(tx_work);
 
-    // Collect results from the results channel.
-    // for _ in 0..work_items.len() {
-    //     let result = rx_results.try_recv().unwrap();
-    //     println!("Received: {}", result);
-    // }
+    // Non-blocking (but patient) data collection
     let mut ct_recv = 0;
     loop {
         if ct_recv >= work_items.len() {
