@@ -35,7 +35,6 @@ fn worker_thread(id:u32, rx: Arc<Mutex<Receiver<String>>>, tx: Sender<String>) {
 }
 
 
-
 fn main() {
     let num_threads = 4;
     // Create channels for sending work and receiving results.
