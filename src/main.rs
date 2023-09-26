@@ -9,6 +9,7 @@ fn worker_thread(id:u32, rx: Arc<Mutex<Receiver<String>>>, tx: Sender<String>) {
     let mut ct: u32 = 0;
 
     loop {
+        // Grab lock the the guard mutex, and take data from channel
         let data = rx.lock().unwrap();
         let datum = data.try_recv();
         drop(data);
@@ -21,11 +22,13 @@ fn worker_thread(id:u32, rx: Arc<Mutex<Receiver<String>>>, tx: Sender<String>) {
                 // Send the result back to the main thread.
                 tx.send(output).unwrap();
                 ct += 1;
-
-                // thread::sleep(Duration::from_millis(4000));
             }
             Err(_) => {
-                break;
+                // No data -- don't break (some might come a bit later), instead
+                // just wait a fraction of second and try again. This worker is
+                // meant to run until the parent stops.
+                // break;
+                thread::sleep(Duration::from_millis(128));
             }
         }
     }
@@ -34,7 +37,7 @@ fn worker_thread(id:u32, rx: Arc<Mutex<Receiver<String>>>, tx: Sender<String>) {
 
 
 fn main() {
-    let num_threads = 2;
+    let num_threads = 4;
     // Create channels for sending work and receiving results.
     let (tx_work, rx_work) = channel();
     let (tx_results, rx_results) = channel();
@@ -42,11 +45,8 @@ fn main() {
 
     // Spawn worker threads.
     for idx in 0..num_threads {
-        // let rx = rx_work.clone();
         let rx = Arc::clone(& shared_work);
         let tx = tx_results.clone();
-        // let (_, rx, tx, _) = chd.get();  
-        // let tx = chd.global_outputs.0.clone();
         thread::spawn(move || {
             worker_thread(idx, rx, tx);
         });
@@ -56,7 +56,10 @@ fn main() {
         "Hi",
         "Ho",
         "Let's",
-        "Go!"
+        "Go!",
+        "For",
+        "Some",
+        "More"
     ];
     // Add work to the work channel.
     for work_item in & work_items {
@@ -64,13 +67,28 @@ fn main() {
         tx_work.send(work_item.to_string()).unwrap();
     }
 
-    // Collect results from the results channel.
-    for _ in 0..work_items.len() {
-        let result = rx_results.recv().unwrap();
-        // let result = chd.global_outputs.1.recv().unwrap();
-        println!("Received: {}", result);
-    }
-
+    // thread::sleep(Duration::from_millis(4000));
     drop(tx_work);
+
+    // Collect results from the results channel.
+    // for _ in 0..work_items.len() {
+    //     let result = rx_results.try_recv().unwrap();
+    //     println!("Received: {}", result);
+    // }
+    let mut ct_recv = 0;
+    loop {
+        if ct_recv >= work_items.len() {
+            break;
+        }
+        match rx_results.recv_timeout(Duration::from_millis(4000)) {
+            Ok(result) => {
+                ct_recv +=1 ;
+                println!("Received: {}", result);
+            }
+            Err(_) => {
+                break;
+            }
+        }
+    }
 
 }
