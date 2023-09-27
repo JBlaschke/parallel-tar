@@ -1,6 +1,6 @@
 // Multi-threading
 use std::sync::{Arc, Mutex};
-use std::sync::mpsc::{Sender, Receiver, channel};
+use std::sync::mpsc::{Sender, Receiver, channel, TryRecvError};
 use std::{thread, time::Duration};
 
 // Tar files
@@ -24,14 +24,8 @@ fn create_tar_archive(
         let entry = entry?;
         let path = entry.path();
 
-        if path.is_file() {
-            // let mut header = Header::new_gnu();
-            // header.set_size(entry.metadata()?.len());
-            // let _ = header.set_path(path.strip_prefix(folder_path)?.to_str().unwrap());
-            // archive.append(&header, File::open(&path)?)?;
-            println!("Adding: {}", path.display());
-            archive.append_path(path).unwrap();
-        }
+        println!("Adding: {}", path.display());
+        archive.append_path(path).unwrap();
     }
 
     archive.finish()?;
@@ -39,89 +33,51 @@ fn create_tar_archive(
 }
 
 
-fn walk_path(folder_path: & str) -> Result<(), Box<dyn Error>> {
+fn take_mutex_try_many<T>(
+        rx: Arc<Mutex<Receiver<T>>>, max_try: u32, wait: Duration
+    ) -> Result<T, TryRecvError> {
 
-    for entry in WalkDir::new(folder_path).follow_links(true) {
-        let entry = entry?;
-        let path = entry.path();
-
-        if path.is_file() {
-            println!("Looking at file: {}", path.display());
-        }
-    }
-
-    Ok(())
-}
-
-
-// fn worker_thread(
-//         output_tar_path: & str,
-//         rx: Arc<Mutex<Receiver<String>>>,
-//         tx: Sender<String>
-//     ) -> Result<(), Box<dyn Error>> {
-//     // Inside this function, you can repeatedly receive work from rx, process
-//     // it, and send the results to tx.
-//     let mut ct: u32 = 0;
-//     let output_file = File::create(output_tar_path)?;
-//     let mut archive = Builder::new(output_file);
-// 
-//     loop {
-//         // Grab lock the the guard mutex, and take data from channel
-//         let data = rx.lock().unwrap();
-//         let datum = data.try_recv();
-//         drop(data);
-// 
-//         match datum {
-//             Ok(input) => {
-//                 // Perform work on 'input' and produce 'output'.
-//                 let output: String = format!("{} Processed {}: {}", id, ct, input);
-// 
-//                 // Send the result back to the main thread.
-//                 tx.send(output).unwrap();
-//                 ct += 1;
-//             }
-//             Err(_) => {
-//                 // No data -- don't break (some might come a bit later), instead
-//                 // just wait a fraction of second and try again. This worker is
-//                 // meant to run until the parent stops.
-//                 // break;
-//                 thread::sleep(Duration::from_millis(128));
-//             }
-//         }
-//     }
-//     Ok(())
-// }
-
-
-fn worker_thread(id:u32, rx: Arc<Mutex<Receiver<String>>>, tx: Sender<String>) {
-    // Inside this function, you can repeatedly receive work from rx, process
-    // it, and send the results to tx.
-    let mut ct: u32 = 0;
-
+    let mut ct = 0;
     loop {
         // Grab lock the the guard mutex, and take data from channel
         let data = rx.lock().unwrap();
         let datum = data.try_recv();
         drop(data);
-
         match datum {
             Ok(input) => {
-                // Perform work on 'input' and produce 'output'.
-                let output: String = format!("{} Processed {}: {}", id, ct, input);
-
-                // Send the result back to the main thread.
-                tx.send(output).unwrap();
-                ct += 1;
+                return Ok(input);
             }
-            Err(_) => {
-                // No data -- don't break (some might come a bit later), instead
-                // just wait a fraction of second and try again. This worker is
-                // meant to run until the parent stops.
-                // break;
-                thread::sleep(Duration::from_millis(128));
+            Err(error) => {
+                if ct > max_try {
+                    return Err(error);
+                }
+                ct += 1;
+                thread::sleep(wait);
             }
         }
     }
+}
+
+
+fn worker_thread(
+        output_tar_path: & str,
+        rx: Arc<Mutex<Receiver<String>>>,
+        tx: Sender<String>
+    ) -> Result<(), TryRecvError> {
+
+    let output_file = File::create(output_tar_path)?;
+    let mut archive = Builder::new(output_file);
+
+    match take_mutex_try_many(rx, 100, Duration::from_millis(128)) {
+        Ok(input) => {
+            // Used to check work that has been done.
+            let output: String = output_tar_path.to_string();
+            tx.send(output).unwrap();
+        }
+        Err(error) => {return Err(error);}
+    }
+
+    Ok(())
 }
 
 
