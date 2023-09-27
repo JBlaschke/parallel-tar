@@ -5,36 +5,30 @@ use std::{thread, time::Duration};
 
 // Tar files
 use std::fs::File;
-use std::io::{self, Write};
-use tar::{Builder, Header};
+use tar::Builder;
 use walkdir::WalkDir;
 use std::error::Error;
 
 // Clap
 use clap::{Arg, Command};
 
-fn create_tar_archive(
-        folder_path: & str, output_tar_path: & str
-    ) -> Result<(), Box<dyn Error>> {
 
-    let output_file = File::create(output_tar_path)?;
-    let mut archive = Builder::new(output_file);
+fn find_files(folder_path: & str) -> Result<Vec<String>, Box<dyn Error>> {
 
+    let mut files: Vec<String> = Vec::new();
     for entry in WalkDir::new(folder_path).follow_links(true) {
         let entry = entry?;
         let path = entry.path();
 
-        println!("Adding: {}", path.display());
-        archive.append_path(path).unwrap();
+        files.push(path.to_str().unwrap().to_string());
     }
 
-    archive.finish()?;
-    Ok(())
+    Ok(files)
 }
 
 
 fn take_mutex_try_many<T>(
-        rx: Arc<Mutex<Receiver<T>>>, max_try: u32, wait: Duration
+        rx: & Arc<Mutex<Receiver<T>>>, max_try: u32, wait: Duration
     ) -> Result<T, TryRecvError> {
 
     let mut ct = 0;
@@ -59,25 +53,25 @@ fn take_mutex_try_many<T>(
 }
 
 
-fn worker_thread(
+fn create_worker_thread(
         output_tar_path: & str,
         rx: Arc<Mutex<Receiver<String>>>,
         tx: Sender<String>
-    ) -> Result<(), TryRecvError> {
+    ) -> Result<(), Box<dyn Error>> {
 
     let output_file = File::create(output_tar_path)?;
     let mut archive = Builder::new(output_file);
 
-    match take_mutex_try_many(rx, 100, Duration::from_millis(128)) {
-        Ok(input) => {
-            // Used to check work that has been done.
-            let output: String = output_tar_path.to_string();
-            tx.send(output).unwrap();
+    loop {
+        match take_mutex_try_many(& rx, 100, Duration::from_millis(128)) {
+            Ok(input) => {
+                archive.append_path(input.clone()).unwrap();
+                // Used to check work that has been done.
+                tx.send(input).unwrap();
+            }
+            Err(error) => {return Err(Box::new(error));}
         }
-        Err(error) => {return Err(error);}
     }
-
-    Ok(())
 }
 
 
@@ -121,10 +115,10 @@ fn main() {
 
     let target = args.get_one::<String>("target").unwrap();
     let archive_name = args.get_one::<String>("archive_name").unwrap();
-    let create = args.get_one::<bool>("create").unwrap();
-    let extract = args.get_one::<bool>("extract").unwrap();
+    let _create = args.get_one::<bool>("create").unwrap();
+    let _extract = args.get_one::<bool>("extract").unwrap();
 
-    let num_threads = 4;
+    let num_threads = 2;
     // Create channels for sending work and receiving results.
     let (tx_work, rx_work) = channel();
     let (tx_results, rx_results) = channel();
@@ -134,20 +128,13 @@ fn main() {
     for idx in 0..num_threads {
         let rx = Arc::clone(& shared_work);
         let tx = tx_results.clone();
+        let name = format!("{}.{}.tar", archive_name, idx);
         thread::spawn(move || {
-            worker_thread(idx, rx, tx);
+            let _ = create_worker_thread(name.as_str(), rx, tx);
         });
     }
 
-    let work_items = vec![
-        "Hi",
-        "Ho",
-        "Let's",
-        "Go!",
-        "For",
-        "Some",
-        "More"
-    ];
+    let work_items = find_files(target).unwrap();
     // Add work to the work channel.
     for work_item in & work_items {
         tx_work.send(work_item.to_string()).unwrap();
@@ -171,7 +158,5 @@ fn main() {
             }
         }
     }
-
-    create_tar_archive(target, archive_name);
 
 }
