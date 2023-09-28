@@ -4,10 +4,13 @@ use std::sync::mpsc::{Sender, Receiver, channel, TryRecvError};
 use std::{thread, time::Duration};
 
 // Tar files
-use std::fs::File;
-use tar::Builder;
+use std::fs::{File, symlink_metadata, read_link};
+use std::os::unix::fs::PermissionsExt; // Import for Unix-specific permissions
+use std::path::Path;
+use tar::{Builder, Header, EntryType};
 use walkdir::WalkDir;
 use std::error::Error;
+
 
 // Clap
 use clap::{Arg, Command};
@@ -79,6 +82,14 @@ fn collect_expected<T>(ct_expect: usize, rx: Receiver<T>, wait: Duration) -> Vec
 }
 
 
+fn is_symlink(path_str: & str) -> bool {
+    let path = Path::new(& path_str);
+    path.symlink_metadata().map(
+        |metadata| metadata.file_type().is_symlink()
+    ).unwrap_or(false)
+}
+
+
 fn create_worker_thread(
         output_tar_path: & str,
         rx: Arc<Mutex<Receiver<String>>>,
@@ -91,8 +102,21 @@ fn create_worker_thread(
     loop {
         match take_mutex_try_many(& rx, 100, Duration::from_millis(128)) {
             Ok(input) => {
-                archive.append_path(input.clone()).unwrap();
-                // Used to check work that has been done.
+                if is_symlink(& input) {
+                    let mut header = Header::new_gnu();
+                    header.set_entry_type(EntryType::Symlink);
+                    header.set_size(0);
+                    header.set_mode(
+                        symlink_metadata(& input).unwrap().permissions().mode()
+                    );
+
+                    let link_target = read_link(& input)?;
+                    let _ = header.set_link_name(& link_target);
+                    archive.append_link(&mut header, & input, & link_target).unwrap();
+                } else {
+                    archive.append_path(input.clone()).unwrap();
+                }
+                // Used to check work that has been done
                 tx.send(input).unwrap();
             }
             Err(error) => {return Err(Box::new(error));}
