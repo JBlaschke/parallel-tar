@@ -53,6 +53,29 @@ fn take_mutex_try_many<T>(
 }
 
 
+fn collect_expected<T>(ct_expect: usize, rx: Receiver<T>, wait: Duration) -> Vec<T> {
+    let mut items: Vec<T> = Vec::new();
+    // Non-blocking (but patient) data collection
+    let mut ct_recv = 0;
+    loop {
+        if ct_recv >= ct_expect {
+            break;
+        }
+        match rx.recv_timeout(wait) {
+            Ok(result) => {
+                items.push(result);
+                ct_recv +=1 ;
+            }
+            Err(_) => {
+                // Don't break -- keep collecting data until we've got the
+                // expected number of elements (equal to the input)
+            }
+        }
+    }
+    return items;
+}
+
+
 fn create_worker_thread(
         output_tar_path: & str,
         rx: Arc<Mutex<Receiver<String>>>,
@@ -142,20 +165,14 @@ fn main() {
 
     drop(tx_work);
 
-    // Non-blocking (but patient) data collection
-    let mut ct_recv = 0;
-    loop {
-        if ct_recv >= work_items.len() {
-            break;
-        }
-        match rx_results.recv_timeout(Duration::from_millis(4000)) {
-            Ok(result) => {
-                ct_recv +=1 ;
-                println!("Received: {}", result);
-            }
-            Err(_) => {
-                break;
-            }
+    let processed_items = collect_expected(
+        work_items.len(), rx_results, Duration::from_millis(4000)
+    );
+
+    for i in &processed_items {
+        if work_items.iter().any(|e| e == i ) {
+        } else {
+            println!("Work item {} requested but not processed!", i)
         }
     }
 
