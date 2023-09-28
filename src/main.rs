@@ -13,10 +13,12 @@ use std::error::Error;
 use clap::{Arg, Command};
 
 
-fn find_files(folder_path: & str) -> Result<Vec<String>, Box<dyn Error>> {
+fn find_files(
+        folder_path: & str, follow_links: bool
+    ) -> Result<Vec<String>, Box<dyn Error>> {
 
     let mut files: Vec<String> = Vec::new();
-    for entry in WalkDir::new(folder_path).follow_links(true) {
+    for entry in WalkDir::new(folder_path).follow_links(follow_links) {
         let entry = entry?;
         let path = entry.path();
 
@@ -63,6 +65,7 @@ fn collect_expected<T>(ct_expect: usize, rx: Receiver<T>, wait: Duration) -> Vec
         }
         match rx.recv_timeout(wait) {
             Ok(result) => {
+                // println!("Collected {}/{}", ct_recv, ct_expect);
                 items.push(result);
                 ct_recv +=1 ;
             }
@@ -115,7 +118,7 @@ fn main() {
             .short('c')
             .long("create")
             .help("Create an archive")
-            .required(false)
+            .required_unless_present("extract")
             .num_args(0)
         )
         .arg(
@@ -123,6 +126,14 @@ fn main() {
             .short('x')
             .long("extract")
             .help("Extract a list of archives")
+            .required_unless_present("create")
+            .num_args(0)
+        )
+        .arg(
+            Arg::new("follow_links")
+            .short('l')
+            .long("follow")
+            .help("Follow links while enumerating files")
             .required(false)
             .num_args(0)
         )
@@ -134,21 +145,31 @@ fn main() {
             .required(true)
             .num_args(1)
         )
+        .arg(
+            Arg::new("num_threads")
+            .short('n')
+            .help("Number of parallel threads to use")
+            .required(true)
+            .num_args(1)
+            .value_parser(clap::value_parser!(u32))
+        )
         .get_matches();
 
     let target = args.get_one::<String>("target").unwrap();
     let archive_name = args.get_one::<String>("archive_name").unwrap();
+    let num_threads = args.get_one::<u32>("num_threads").unwrap();
     let _create = args.get_one::<bool>("create").unwrap();
     let _extract = args.get_one::<bool>("extract").unwrap();
+    let follow_links = args.get_one::<bool>("follow_links").unwrap();
 
-    let num_threads = 2;
-    // Create channels for sending work and receiving results.
+    // Create channels for sending work and receiving results
     let (tx_work, rx_work) = channel();
     let (tx_results, rx_results) = channel();
     let shared_work = Arc::new(Mutex::new(rx_work));
 
-    // Spawn worker threads.
-    for idx in 0..num_threads {
+    // Spawn worker threads
+    println!("Starting {} worker threads", num_threads);
+    for idx in 0..*num_threads {
         let rx = Arc::clone(& shared_work);
         let tx = tx_results.clone();
         let name = format!("{}.{}.tar", archive_name, idx);
@@ -157,21 +178,23 @@ fn main() {
         });
     }
 
-    let work_items = find_files(target).unwrap();
+    println!("Enumerating files. Following links? {}", follow_links);
+    let work_items = find_files(target, *follow_links).unwrap();
     // Add work to the work channel.
     for work_item in & work_items {
         tx_work.send(work_item.to_string()).unwrap();
     }
 
-    drop(tx_work);
-
+    println!("Collecting worker status (workers are working ...)");
     let processed_items = collect_expected(
         work_items.len(), rx_results, Duration::from_millis(4000)
     );
 
+    drop(tx_work);
+
+    println!("... Checking worker status.");
     for i in &processed_items {
-        if work_items.iter().any(|e| e == i ) {
-        } else {
+        if ! work_items.iter().any(|e| e == i ) {
             println!("Work item {} requested but not processed!", i)
         }
     }
