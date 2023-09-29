@@ -8,7 +8,7 @@ use std::{thread, time::Duration};
 use std::fs::{File, symlink_metadata, read_link};
 use std::os::unix::fs::PermissionsExt; // Import for Unix-specific permissions
 use std::path::Path;
-use tar::{Builder, Header, EntryType};
+use tar::{Builder, Header, EntryType, Archive};
 use walkdir::WalkDir;
 use std::error::Error;
 
@@ -155,6 +155,66 @@ fn create_worker_thread(
 }
 
 
+fn extract_worker_thread(tar_path: & str, destination: & str) {
+    let mut ar = Archive::new(File::open(tar_path).unwrap());
+    ar.unpack(destination).unwrap();
+}
+
+
+fn create(
+        archive_name: & String, target: & String,
+        num_threads: & u32, follow_links: & bool
+    ) {
+    // Create channels for sending work and receiving results
+    let (tx_work, rx_work) = channel();
+    let (tx_results, rx_results) = channel();
+    let shared_work = Arc::new(Mutex::new(rx_work));
+    // Used to signal threads to shut down (once work is complete)
+    let work_completed = Arc::new(Mutex::new(false));
+
+    // Spawn worker threads
+    println!("Starting {} worker threads", num_threads);
+    let mut handles: Vec<JoinHandle<()>> = Vec::new();
+    for idx in 0..*num_threads {
+        let rx = Arc::clone(& shared_work);
+        let tx = tx_results.clone();
+        let cmp = Arc::clone(& work_completed);
+        let name = format!("{}.{}.tar", archive_name, idx);
+        handles.push(
+            thread::spawn(move || {
+                create_worker_thread(name.as_str(), rx, tx, cmp);
+            })
+        );
+    }
+
+    println!("Enumerating files. Following links? {}", follow_links);
+    let work_items = find_files(target, *follow_links).unwrap();
+    // Add work to the work channel
+    for work_item in & work_items {
+        tx_work.send(work_item.to_string()).unwrap();
+    }
+
+    println!("Collecting worker status (workers are working) ...");
+    let processed_items = collect_expected(
+        work_items.len(), rx_results, Duration::from_millis(4000)
+    );
+    set_mutex(& work_completed, true);
+
+    println!(" ... waiting for workers to finish ...");
+    for h in handles {
+        h.join().unwrap();
+    }
+    println!(" ... workers are done ...");
+    drop(tx_work);
+
+    println!("... checking worker status.");
+    for i in &processed_items {
+        if ! work_items.iter().any(|e| e == i ) {
+            println!("Work item {} requested but not processed!", i)
+        }
+    }
+}
+
 fn main() {
     let args = Command::new("Parallel Tar")
         .version("1.0")
@@ -212,57 +272,13 @@ fn main() {
     let target = args.get_one::<String>("target").unwrap();
     let archive_name = args.get_one::<String>("archive_name").unwrap();
     let num_threads = args.get_one::<u32>("num_threads").unwrap();
-    let _create = args.get_one::<bool>("create").unwrap();
-    let _extract = args.get_one::<bool>("extract").unwrap();
+    let create_mode = args.get_one::<bool>("create").unwrap();
+    let extract_mode = args.get_one::<bool>("extract").unwrap();
     let follow_links = args.get_one::<bool>("follow_links").unwrap();
 
-    // Create channels for sending work and receiving results
-    let (tx_work, rx_work) = channel();
-    let (tx_results, rx_results) = channel();
-    let shared_work = Arc::new(Mutex::new(rx_work));
-    // Used to signal threads to shut down (once work is complete)
-    let work_completed = Arc::new(Mutex::new(false));
-
-    // Spawn worker threads
-    println!("Starting {} worker threads", num_threads);
-    let mut handles: Vec<JoinHandle<()>> = Vec::new();
-    for idx in 0..*num_threads {
-        let rx = Arc::clone(& shared_work);
-        let tx = tx_results.clone();
-        let cmp = Arc::clone(& work_completed);
-        let name = format!("{}.{}.tar", archive_name, idx);
-        handles.push(
-            thread::spawn(move || {
-                create_worker_thread(name.as_str(), rx, tx, cmp);
-            })
-        );
+    if * create_mode {
+        create(archive_name, target, num_threads, follow_links);
+    } else if * extract_mode {
+        
     }
-
-    println!("Enumerating files. Following links? {}", follow_links);
-    let work_items = find_files(target, *follow_links).unwrap();
-    // Add work to the work channel
-    for work_item in & work_items {
-        tx_work.send(work_item.to_string()).unwrap();
-    }
-
-    println!("Collecting worker status (workers are working) ...");
-    let processed_items = collect_expected(
-        work_items.len(), rx_results, Duration::from_millis(4000)
-    );
-    set_mutex(& work_completed, true);
-
-    println!(" ... waiting for workers to finish ...");
-    for h in handles {
-        h.join().unwrap();
-    }
-    println!(" ... workers are done ...");
-    drop(tx_work);
-
-    println!("... checking worker status.");
-    for i in &processed_items {
-        if ! work_items.iter().any(|e| e == i ) {
-            println!("Work item {} requested but not processed!", i)
-        }
-    }
-
 }
