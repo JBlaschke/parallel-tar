@@ -1,6 +1,7 @@
 // Multi-threading
 use std::sync::{Arc, Mutex};
 use std::sync::mpsc::{Sender, Receiver, channel, TryRecvError};
+use std::thread::JoinHandle;
 use std::{thread, time::Duration};
 
 // Tar files
@@ -32,8 +33,25 @@ fn find_files(
 }
 
 
+fn set_mutex<T: Copy>(mutex: & Arc<Mutex<T>>, val: T) {
+    let mut lock = mutex.lock().unwrap();
+    * lock = val;
+    drop(lock);
+}
+
+
+fn get_mutex<T: Copy>(mutex: & Arc<Mutex<T>>) -> T {
+    let lock = mutex.lock().unwrap();
+    let val = * lock;
+    drop(lock);
+    return val;
+}
+
+
 fn take_mutex_try_many<T>(
-        rx: & Arc<Mutex<Receiver<T>>>, max_try: u32, wait: Duration
+        rx: & Arc<Mutex<Receiver<T>>>,
+        max_try: u32, wait: Duration,
+        completed: & Arc<Mutex<bool>>
     ) -> Result<T, TryRecvError> {
 
     let mut ct = 0;
@@ -47,7 +65,7 @@ fn take_mutex_try_many<T>(
                 return Ok(input);
             }
             Err(error) => {
-                if ct > max_try {
+                if (ct > max_try) || get_mutex(& completed) {
                     return Err(error);
                 }
                 ct += 1;
@@ -68,13 +86,14 @@ fn collect_expected<T>(ct_expect: usize, rx: Receiver<T>, wait: Duration) -> Vec
         }
         match rx.recv_timeout(wait) {
             Ok(result) => {
-                // println!("Collected {}/{}", ct_recv, ct_expect);
                 items.push(result);
                 ct_recv +=1 ;
             }
-            Err(_) => {
-                // Don't break -- keep collecting data until we've got the
-                // expected number of elements (equal to the input)
+            Err(error) => {
+                panic!(
+                    "Failure {} while collecting {} out of {}",
+                    error, ct_recv, ct_expect
+                );
             }
         }
     }
@@ -93,14 +112,15 @@ fn is_symlink(path_str: & str) -> bool {
 fn create_worker_thread(
         output_tar_path: & str,
         rx: Arc<Mutex<Receiver<String>>>,
-        tx: Sender<String>
-    ) -> Result<(), Box<dyn Error>> {
+        tx: Sender<String>,
+        completed: Arc<Mutex<bool>>
+    ) {
 
-    let output_file = File::create(output_tar_path)?;
+    let output_file = File::create(output_tar_path).unwrap();
     let mut archive = Builder::new(output_file);
 
     loop {
-        match take_mutex_try_many(& rx, 100, Duration::from_millis(128)) {
+        match take_mutex_try_many(& rx, 100, Duration::from_millis(128), & completed) {
             Ok(input) => {
                 if is_symlink(& input) {
                     let mut header = Header::new_gnu();
@@ -110,7 +130,7 @@ fn create_worker_thread(
                         symlink_metadata(& input).unwrap().permissions().mode()
                     );
 
-                    let link_target = read_link(& input)?;
+                    let link_target = read_link(& input).unwrap();
                     let _ = header.set_link_name(& link_target);
                     archive.append_link(&mut header, & input, & link_target).unwrap();
                 } else {
@@ -119,7 +139,17 @@ fn create_worker_thread(
                 // Used to check work that has been done
                 tx.send(input).unwrap();
             }
-            Err(error) => {return Err(Box::new(error));}
+            Err(error) => {
+                // Check if work is done
+                if get_mutex(& completed) {
+                    return;
+                }
+
+                panic!(
+                    "Failure {} on thread responsible for: {}",
+                    error, output_tar_path
+                );
+            }
         }
     }
 }
@@ -190,33 +220,45 @@ fn main() {
     let (tx_work, rx_work) = channel();
     let (tx_results, rx_results) = channel();
     let shared_work = Arc::new(Mutex::new(rx_work));
+    // Used to signal threads to shut down (once work is complete)
+    let work_completed = Arc::new(Mutex::new(false));
 
     // Spawn worker threads
     println!("Starting {} worker threads", num_threads);
+    let mut handles: Vec<JoinHandle<()>> = Vec::new();
     for idx in 0..*num_threads {
         let rx = Arc::clone(& shared_work);
         let tx = tx_results.clone();
+        let cmp = Arc::clone(& work_completed);
         let name = format!("{}.{}.tar", archive_name, idx);
-        thread::spawn(move || {
-            let _ = create_worker_thread(name.as_str(), rx, tx);
-        });
+        handles.push(
+            thread::spawn(move || {
+                create_worker_thread(name.as_str(), rx, tx, cmp);
+            })
+        );
     }
 
     println!("Enumerating files. Following links? {}", follow_links);
     let work_items = find_files(target, *follow_links).unwrap();
-    // Add work to the work channel.
+    // Add work to the work channel
     for work_item in & work_items {
         tx_work.send(work_item.to_string()).unwrap();
     }
 
-    println!("Collecting worker status (workers are working ...)");
+    println!("Collecting worker status (workers are working) ...");
     let processed_items = collect_expected(
         work_items.len(), rx_results, Duration::from_millis(4000)
     );
+    set_mutex(& work_completed, true);
 
+    println!(" ... waiting for workers to finish ...");
+    for h in handles {
+        h.join().unwrap();
+    }
+    println!(" ... workers are done ...");
     drop(tx_work);
 
-    println!("... Checking worker status.");
+    println!("... checking worker status.");
     for i in &processed_items {
         if ! work_items.iter().any(|e| e == i ) {
             println!("Work item {} requested but not processed!", i)
