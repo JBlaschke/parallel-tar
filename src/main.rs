@@ -215,6 +215,33 @@ fn create(
     }
 }
 
+
+fn extract(
+        archive_name: & String, target: & String, num_threads: & u32
+    ) {
+
+    // Spawn worker threads
+    println!("Starting {} worker threads", num_threads);
+    let mut handles: Vec<JoinHandle<()>> = Vec::new();
+    for idx in 0..*num_threads {
+        let name = format!("{}.{}.tar", archive_name, idx);
+        let ctarget = target.clone();
+        handles.push(
+            thread::spawn(move || {
+                extract_worker_thread(name.as_str(), ctarget.as_str());
+            })
+        );
+    }
+
+    println!(" ... waiting for workers to finish ...");
+    for h in handles {
+        h.join().unwrap();
+    }
+    println!(" ... workers are done.");
+
+}
+
+
 fn main() {
     let args = Command::new("Parallel Tar")
         .version("1.0")
@@ -279,6 +306,6 @@ fn main() {
     if * create_mode {
         create(archive_name, target, num_threads, follow_links);
     } else if * extract_mode {
-        
+        extract(archive_name, target, num_threads);
     }
 }
