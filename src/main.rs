@@ -5,20 +5,23 @@ use std::thread::JoinHandle;
 use std::{thread, time::Duration};
 
 // Tar files
+use tar::{Builder, Header, EntryType, Archive};
+
+// File system
 use std::fs::{File, symlink_metadata, read_link};
 use std::os::unix::fs::PermissionsExt; // Import for Unix-specific permissions
 use std::path::Path;
-use tar::{Builder, Header, EntryType, Archive};
 use walkdir::WalkDir;
-use std::error::Error;
 
+// Stdlib
+use std::error::Error;
 
 // Clap
 use clap::{Arg, Command};
 
 
 fn find_files(
-        folder_path: & str, follow_links: bool
+        folder_path: &str, follow_links: bool
     ) -> Result<Vec<String>, Box<dyn Error>> {
 
     let mut files: Vec<String> = Vec::new();
@@ -33,14 +36,14 @@ fn find_files(
 }
 
 
-fn set_mutex<T: Copy>(mutex: & Arc<Mutex<T>>, val: T) {
+fn set_mutex<T: Copy>(mutex: &Arc<Mutex<T>>, val: T) {
     let mut lock = mutex.lock().unwrap();
     * lock = val;
     drop(lock);
 }
 
 
-fn get_mutex<T: Copy>(mutex: & Arc<Mutex<T>>) -> T {
+fn get_mutex<T: Copy>(mutex: &Arc<Mutex<T>>) -> T {
     let lock = mutex.lock().unwrap();
     let val = * lock;
     drop(lock);
@@ -49,9 +52,9 @@ fn get_mutex<T: Copy>(mutex: & Arc<Mutex<T>>) -> T {
 
 
 fn take_mutex_try_many<T>(
-        rx: & Arc<Mutex<Receiver<T>>>,
+        rx: &Arc<Mutex<Receiver<T>>>,
         max_try: u32, wait: Duration,
-        completed: & Arc<Mutex<bool>>
+        completed: &Arc<Mutex<bool>>
     ) -> Result<T, TryRecvError> {
 
     let mut ct = 0;
@@ -101,7 +104,7 @@ fn collect_expected<T>(ct_expect: usize, rx: Receiver<T>, wait: Duration) -> Vec
 }
 
 
-fn is_symlink(path_str: & str) -> bool {
+fn is_symlink(path_str: &str) -> bool {
     let path = Path::new(& path_str);
     path.symlink_metadata().map(
         |metadata| metadata.file_type().is_symlink()
@@ -110,7 +113,7 @@ fn is_symlink(path_str: & str) -> bool {
 
 
 fn create_worker_thread(
-        output_tar_path: & str,
+        output_tar_path: &str,
         rx: Arc<Mutex<Receiver<String>>>,
         tx: Sender<String>,
         completed: Arc<Mutex<bool>>
@@ -155,15 +158,15 @@ fn create_worker_thread(
 }
 
 
-fn extract_worker_thread(tar_path: & str, destination: & str) {
+fn extract_worker_thread(tar_path: &str, destination: &str) {
     let mut ar = Archive::new(File::open(tar_path).unwrap());
     ar.unpack(destination).unwrap();
 }
 
 
 fn create(
-        archive_name: & String, target: & String,
-        num_threads: & u32, follow_links: & bool
+        archive_name: &String, target: &String,
+        num_threads: &u32, follow_links: &bool
     ) {
     // Create channels for sending work and receiving results
     let (tx_work, rx_work) = channel();
@@ -217,7 +220,7 @@ fn create(
 
 
 fn extract(
-        archive_name: & String, target: & String, num_threads: & u32
+        archive_name: &String, target: &String, num_threads: &u32
     ) {
 
     // Spawn worker threads
@@ -242,9 +245,9 @@ fn extract(
 }
 
 
-fn main() {
+fn main() -> Result<(), Box<dyn Error>> {
     let args = Command::new("Parallel Tar")
-        .version("1.0")
+        .version("2.0")
         .author("Johannes Blaschke")
         .about("Add target directory to parallel list of Tar archives.")
         .arg(
@@ -296,16 +299,24 @@ fn main() {
         )
         .get_matches();
 
-    let target = args.get_one::<String>("target").unwrap();
-    let archive_name = args.get_one::<String>("archive_name").unwrap();
-    let num_threads = args.get_one::<u32>("num_threads").unwrap();
-    let create_mode = args.get_one::<bool>("create").unwrap();
-    let extract_mode = args.get_one::<bool>("extract").unwrap();
-    let follow_links = args.get_one::<bool>("follow_links").unwrap();
+    fn get_arg<'a, T: Clone + Send + Sync + 'static>(
+            args:&'a clap::ArgMatches, name: &str
+        ) -> Result<&'a T, String>{
+        args.get_one::<T>(name).ok_or(format!("Failed to get: '{}'", name))
+    }
+
+    let target: &String       = get_arg(&args, "target")?;
+    let archive_name: &String = get_arg(&args, "archive_name")?;
+    let num_threads: &u32     = get_arg(&args, "num_threads")?;
+    let create_mode: &bool    = get_arg(&args, "create")?;
+    let extract_mode: &bool   = get_arg(&args, "extract")?;
+    let follow_links: &bool   = get_arg(&args, "follow_links")?;
 
     if * create_mode {
         create(archive_name, target, num_threads, follow_links);
     } else if * extract_mode {
         extract(archive_name, target, num_threads);
     }
+
+    Ok(())
 }
