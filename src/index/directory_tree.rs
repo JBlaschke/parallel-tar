@@ -389,22 +389,6 @@ impl TreeNode {
             }
         }
     }
-
-    /// Count total files and directories
-    pub fn count(&self) -> (usize, usize) {
-        match & self.node_type {
-            NodeType::File { .. } | NodeType::Symlink { .. } => (1, 0),
-            NodeType::Directory { children } => {
-                let (files, dirs) = children
-                    .par_iter()
-                    .map(|c| c.count())
-                    // Note: this is Rayon's Reduce operation:
-                    // https://docs.rs/rayon/latest/rayon/iter/trait.ParallelIterator.html#method.reduce
-                    .reduce(|| (0, 0), |(f1, d1), (f2, d2)| (f1 + f2, d1 + d2));
-                (files, dirs + 1)
-            }
-        }
-    }
 }
 
 pub fn format_size(bytes: u64) -> String {
