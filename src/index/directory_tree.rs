@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::fs;
-use std::fs::Metadata;
+use std::fs::{File, Metadata, ReadDir};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
@@ -11,10 +11,12 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use serde_json;
 
-use std::fs::File;
 use std::io::{BufReader, BufWriter};
 
 use rayon::prelude::*;
+
+use log::warn;
+
 
 #[derive(Debug)]
 pub enum IndexerError {
@@ -175,6 +177,13 @@ impl TreeNode {
         let node_type = if metadata.is_symlink() {
             let target: PathBuf = match fs::read_link(path) {
                 Ok(v) => v,
+                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                    warn!(
+                        "'read_link({:?})' failed with 'Permission denied'",
+                        path.to_string_lossy().into_owned()
+                    );
+                    path.to_path_buf()
+                },
                 Err(_) => {
                     if valid_symlinks_only {
                         return Err(IndexerError::NotFound(
@@ -193,7 +202,20 @@ impl TreeNode {
             }
         } else if metadata.is_dir() {
             let mut children = Vec::new();
-            for entry in fs::read_dir(path)? {
+            let dir: ReadDir = match fs::read_dir(path) {
+                Ok(v) => v,
+                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                    warn!(
+                        "'read_dir({:?})' failed with 'Permission denied'",
+                        path.to_string_lossy().into_owned()
+                    );
+                    return Ok(NodeType::Directory { children });
+                },
+                Err(_) => return Err(IndexerError::InvalidPath(
+                        path.to_string_lossy().into_owned()
+                    ))
+            };
+            for entry in dir {
                 let entry = match entry {
                     Ok(v) => v,
                     Err(_) => return Err(IndexerError::InvalidPath(

@@ -1,15 +1,18 @@
 [package]
 name = "anstyle"
-version = "1.0.3"
+version = "1.0.13"
 description = "ANSI text styling"
-repository = "https://github.com/rust-cli/anstyle.git"
-homepage = "https://github.com/rust-cli/anstyle"
 categories = ["command-line-interface"]
 keywords = ["ansi", "terminal", "color", "no_std"]
+repository.workspace = true
 license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 include.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--generate-link-to-definition"]
 
 [package.metadata.release]
 tag-prefix = ""
@@ -29,3 +32,7 @@ std = []
 
 [dev-dependencies]
 lexopt = "0.3.0"
+snapbox = "0.6.5"
+
+[lints]
+workspace = true

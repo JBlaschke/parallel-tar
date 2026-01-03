@@ -1,19 +1,18 @@
 [package]
 name = "anstream"
-version = "0.5.0"
-description = "A simple cross platform library for writing colored text to a terminal."
-repository = "https://github.com/rust-cli/anstyle.git"
-homepage = "https://github.com/rust-cli/anstyle"
+version = "0.6.21"
+description = "IO stream adapters for writing colored text that will gracefully degrade according to your terminal's capabilities."
 categories = ["command-line-interface"]
 keywords = ["ansi", "terminal", "color", "strip", "wincon"]
+repository.workspace = true
 license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 include.workspace = true
 
 [package.metadata.docs.rs]
-rustdoc-args = ["--cfg", "docsrs"]
-cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs", "--generate-link-to-definition"]
 
 [package.metadata.release]
 pre-release-replacements = [
@@ -26,24 +25,36 @@ pre-release-replacements = [
 
 [features]
 default = ["auto", "wincon"]
-auto = ["dep:anstyle-query", "dep:colorchoice"]
+auto = ["dep:anstyle-query"]
 wincon = ["dep:anstyle-wincon"]
+# Enable in `dev-dependencies` to make sure output is captured for tests
+test = []
 
 [dependencies]
 anstyle = { version = "1.0.0", path = "../anstyle" }
 anstyle-parse = { version = "0.2.0", path = "../anstyle-parse" }
-colorchoice = { version = "1.0.0", path = "../colorchoice", optional = true }
+colorchoice = { version = "1.0.0", path = "../colorchoice" }
 anstyle-query = { version = "1.0.0", path = "../anstyle-query", optional = true }
-utf8parse = "0.2.1"
+utf8parse = "0.2.2"
+is_terminal_polyfill = "1.48"
 
 [target.'cfg(windows)'.dependencies]
-anstyle-wincon = { version = "2.0.0", path = "../anstyle-wincon", optional = true }
+anstyle-wincon = { version = "3.0.5", path = "../anstyle-wincon", optional = true }
 
 [dev-dependencies]
-criterion = "0.4.0"
-owo-colors = "3.5.0"
-proptest = "1.1.0"
-strip-ansi-escapes = "0.1.1"
+divan = "0.1.16"
+lexopt = "0.3.1"
+owo-colors = "4.0.0"
+proptest = "1.7.0"
+strip-ansi-escapes = "0.2.1"
+
+[[example]]
+name = "dump-stream"
+required-features = ["auto"]
+
+[[example]]
+name = "query-stream"
+required-features = ["auto"]
 
 [[bench]]
 name = "strip"
@@ -56,3 +67,6 @@ harness = false
 [[bench]]
 name = "stream"
 harness = false
+
+[lints]
+workspace = true

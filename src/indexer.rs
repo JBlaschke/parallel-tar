@@ -9,8 +9,14 @@ use crate::index::directory_tree::{TreeNode, format_size, save_tree};
 
 use rayon::ThreadPoolBuilder;
 
+use env_logger;
 
 fn main() -> Result<(), Box<dyn Error>> {
+    // By default emit warnings
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("warn")
+    ).init();
+
     let args = Command::new("Indexer for Parallel Tar")
         .version("2.0")
         .author("Johannes Blaschke")
