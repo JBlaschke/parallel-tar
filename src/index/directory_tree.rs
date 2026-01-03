@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::fs;
-use std::fs::{File, Metadata, ReadDir};
+use std::fs::{File, Metadata};
 use std::path::{Path, PathBuf};
 // use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
@@ -71,6 +71,7 @@ pub enum NodeType {
     File { size: u64 },
     Directory { children: Vec<Arc<TreeNode>> },
     Symlink { target: PathBuf },
+    Unknown {}
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -78,6 +79,7 @@ pub enum SerializedNodeType {
     File { size: u64 },
     Directory { children: Vec<SerializedTreeNode> },
     Symlink { target: PathBuf },
+    Unknown {}
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, Default)]
@@ -124,6 +126,7 @@ impl TreeNode {
             NodeType::Symlink { target } => SerializedNodeType::Symlink {
                 target: target.clone(),
             },
+            NodeType::Unknown {} => SerializedNodeType::Unknown {}
         };
 
         Ok(SerializedTreeNode {
@@ -147,6 +150,7 @@ impl TreeNode {
             SerializedNodeType::Symlink { target } => NodeType::Symlink {
                 target: target
             },
+            SerializedNodeType::Unknown {} => NodeType::Unknown {}
         };
 
         Arc::new(TreeNode {
@@ -173,13 +177,6 @@ impl TreeNode {
         let node_type = if metadata.is_symlink() {
             let target: PathBuf = match fs::read_link(path) {
                 Ok(v) => v,
-                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-                    warn!(
-                        "'read_link({:?})' failed with 'Permission denied'",
-                        path.to_string_lossy().into_owned()
-                    );
-                    path.to_path_buf()
-                },
                 Err(_) => {
                     if valid_symlinks_only {
                         return Err(IndexerError::NotFound(
@@ -198,26 +195,8 @@ impl TreeNode {
             }
         } else if metadata.is_dir() {
             let mut children = Vec::new();
-            let dir: ReadDir = match fs::read_dir(path) {
-                Ok(v) => v,
-                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-                    warn!(
-                        "'read_dir({:?})' failed with 'Permission denied'",
-                        path.to_string_lossy().into_owned()
-                    );
-                    return Ok(NodeType::Directory { children });
-                },
-                Err(_) => return Err(IndexerError::InvalidPath(
-                        path.to_string_lossy().into_owned()
-                    ))
-            };
-            for entry in dir {
-                let entry = match entry {
-                    Ok(v) => v,
-                    Err(_) => return Err(IndexerError::InvalidPath(
-                            path.to_string_lossy().into_owned()
-                        ))
-                };
+            for entry in fs::read_dir(path)? {
+                let entry = entry?;
                 match TreeNode::from_path(
                         entry.path(), follow_symlinks, valid_symlinks_only
                     ) {
@@ -255,9 +234,20 @@ impl TreeNode {
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| path.to_string_lossy().into_owned());
 
-        let node_type: NodeType = Self::node_type_from_path(
-            path, follow_symlinks, valid_symlinks_only
-        )?;
+        let node_type: NodeType = match Self::node_type_from_path(
+                path, follow_symlinks, valid_symlinks_only
+            ) {
+            Ok(v) => v,
+            Err(IndexerError::Io(e))
+                if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                warn!(
+                    "'node_type_from_path({:?})' failed with 'Permission denied'",
+                    path.to_string_lossy().into_owned()
+                );
+                NodeType::Unknown {}
+            },
+            Err(e) => return Err(e)
+        };
 
         Ok(Arc::new(TreeNode {
             name,
@@ -296,7 +286,7 @@ impl TreeNode {
         // updated by different update passes.
         let mut guard = self.metadata.write()?;
 
-        let meta = match &self.node_type {
+        let meta = match & self.node_type {
             NodeType::File { size } => NodeMetadata {
                 size: * size as usize,
                 files:  1,
@@ -327,7 +317,8 @@ impl TreeNode {
                     // remember to also count _this_ directory
                     dirs:  c_meta.dirs + 1
                 }
-            }
+            },
+            NodeType::Unknown {} => NodeMetadata::default()
         };
 
         *guard = Some(meta);
@@ -364,10 +355,11 @@ impl TreeNode {
     /// Pretty print the tree with computed sizes
     pub fn print_tree(&self, prefix: &str, is_last: bool) {
         let connector = if is_last { "└── " } else { "├── " };
-        let icon = match &self.node_type {
+        let icon = match & self.node_type {
             NodeType::File { .. } => "📄",
             NodeType::Directory { .. } => "📁",
             NodeType::Symlink { .. } => "🔗",
+            NodeType::Unknown { .. } => "❓",
         };
 
         let size = match self.read_metadata() {
