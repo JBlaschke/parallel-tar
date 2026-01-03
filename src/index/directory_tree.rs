@@ -92,7 +92,6 @@ pub struct TreeNode {
     pub name: String,
     pub path: PathBuf,
     pub node_type: NodeType,
-    // pub computed_size: AtomicU64,
     pub metadata: RwLock<Option<NodeMetadata>>
 }
 
@@ -101,7 +100,6 @@ pub struct SerializedTreeNode {
     pub name: String,
     pub path: PathBuf,
     pub node_type: SerializedNodeType,
-    // pub computed_size: u64,
     pub metadata: Option<NodeMetadata>
 }
 
@@ -132,7 +130,6 @@ impl TreeNode {
             name: self.name.clone(),
             path: self.path.clone(),
             node_type,
-            // computed_size: self.computed_size.load(Ordering::SeqCst),
             metadata: * self.metadata.read()?
         })
     }
@@ -156,7 +153,6 @@ impl TreeNode {
             name: s.name,
             path: s.path,
             node_type,
-            // computed_size: AtomicU64::new(s.computed_size),
             metadata: s.metadata.into()
         })
     }
@@ -267,7 +263,6 @@ impl TreeNode {
             name,
             path: path.to_path_buf(),
             node_type,
-            // computed_size: AtomicU64::new(0),
             metadata: RwLock::new(None)
         }))
     }
@@ -339,25 +334,6 @@ impl TreeNode {
         return Ok(meta);
     }
 
-    // /// Compute sizes bottom-up in parallel using rayon
-    // pub fn compute_sizes(&self) -> u64 {
-    //     let size = match &self.node_type {
-    //         NodeType::File { size } => *size,
-    //         NodeType::Symlink { .. } => 0,
-    //         NodeType::Directory { children } => {
-    //             // Process children in parallel
-    //             children.par_iter().map(|child| child.compute_sizes()).sum()
-    //         }
-    //     };
-    //     self.computed_size.store(size, Ordering::SeqCst);
-    //     size
-    // }
-
-    // /// Get the computed size (after compute_sizes has been called)
-    // pub fn get_computed_size(&self) -> u64 {
-    //     self.computed_size.load(Ordering::SeqCst)
-    // }
-
     pub fn read_metadata(&self) -> Option<NodeMetadata> {
         self.metadata
             .read()
@@ -395,7 +371,7 @@ impl TreeNode {
         };
 
         let size = match self.read_metadata() {
-            Some(v) => v.size, //self.computed_size.load(Ordering::SeqCst);
+            Some(v) => v.size,
             None => 0
         };
         let size_str = if size > 0 {
