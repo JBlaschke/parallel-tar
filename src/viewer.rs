@@ -38,27 +38,32 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let index_path: &String = get_arg(& args, "index_path")?;
+    println!("Loading index at: '{}'", index_path);
     let tree: Arc<TreeNode> = load_tree(index_path)?;
+    let meta = tree.read_metadata().unwrap_or_default();
 
-    let (files, dirs) = tree.count();
-    let total = tree.get_computed_size();
-    println!(
-        "{} files, {} directories, {} total", files, dirs, format_size(total)
-    );
-
+    println!("Done loading!");
     tree.print_tree("", true);
 
+    println!(
+        "Loaded index containing: {} files, {} directories, {} total",
+        meta.files, meta.dirs, format_size(meta.size as u64)
+    );
     // Show the 5 largest nodes
     println!("--- Largest Entries ---");
     let mut all_nodes: Vec<_> = tree.collect_all();
-    all_nodes.sort_by(|a, b| b.get_computed_size().cmp(&a.get_computed_size()));
+    all_nodes.sort_by(
+        |a, b| {
+            let meta_a = a.read_metadata().unwrap_or_default();
+            let meta_b = b.read_metadata().unwrap_or_default();
+            meta_b.size.cmp(& meta_a.size)
+    });
     for node in all_nodes.iter().take(5) {
-        println!(
-            "{}: {}",
-            node.path.display(),
-            format_size(node.get_computed_size())
-        );
-    }
+        let meta = node.read_metadata().unwrap_or_default();
+        println!("{}", node.path.display());
+        println!("├── {} files + {} dirs" , meta.files, meta.dirs);
+        println!("└── {} " , format_size(meta.size as u64));
+    };
     println!("-----------------------");
 
     Ok(())

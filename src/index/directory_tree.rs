@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::fs;
 use std::fs::{File, Metadata, ReadDir};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+// use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use std::error::Error;
@@ -80,7 +80,7 @@ pub enum SerializedNodeType {
     Symlink { target: PathBuf },
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, Default)]
 pub struct NodeMetadata {
     pub size:  usize,
     pub files: usize,
@@ -92,7 +92,7 @@ pub struct TreeNode {
     pub name: String,
     pub path: PathBuf,
     pub node_type: NodeType,
-    pub computed_size: AtomicU64,
+    // pub computed_size: AtomicU64,
     pub metadata: RwLock<Option<NodeMetadata>>
 }
 
@@ -101,13 +101,13 @@ pub struct SerializedTreeNode {
     pub name: String,
     pub path: PathBuf,
     pub node_type: SerializedNodeType,
-    pub computed_size: u64,
+    // pub computed_size: u64,
     pub metadata: Option<NodeMetadata>
 }
 
 // Explicitly implement Sync since AtomicU64 is Sync and our other fields are
 // Sync
-unsafe impl Sync for TreeNode {}
+//unsafe impl Sync for TreeNode {}
 
 impl TreeNode {
     pub fn to_serializable(&self) -> Result<SerializedTreeNode, IndexerError> {
@@ -132,7 +132,7 @@ impl TreeNode {
             name: self.name.clone(),
             path: self.path.clone(),
             node_type,
-            computed_size: self.computed_size.load(Ordering::SeqCst),
+            // computed_size: self.computed_size.load(Ordering::SeqCst),
             metadata: * self.metadata.read()?
         })
     }
@@ -156,7 +156,7 @@ impl TreeNode {
             name: s.name,
             path: s.path,
             node_type,
-            computed_size: AtomicU64::new(s.computed_size),
+            // computed_size: AtomicU64::new(s.computed_size),
             metadata: s.metadata.into()
         })
     }
@@ -267,7 +267,7 @@ impl TreeNode {
             name,
             path: path.to_path_buf(),
             node_type,
-            computed_size: AtomicU64::new(0),
+            // computed_size: AtomicU64::new(0),
             metadata: RwLock::new(None)
         }))
     }
@@ -339,23 +339,31 @@ impl TreeNode {
         return Ok(meta);
     }
 
-    /// Compute sizes bottom-up in parallel using rayon
-    pub fn compute_sizes(&self) -> u64 {
-        let size = match &self.node_type {
-            NodeType::File { size } => *size,
-            NodeType::Symlink { .. } => 0,
-            NodeType::Directory { children } => {
-                // Process children in parallel
-                children.par_iter().map(|child| child.compute_sizes()).sum()
-            }
-        };
-        self.computed_size.store(size, Ordering::SeqCst);
-        size
-    }
+    // /// Compute sizes bottom-up in parallel using rayon
+    // pub fn compute_sizes(&self) -> u64 {
+    //     let size = match &self.node_type {
+    //         NodeType::File { size } => *size,
+    //         NodeType::Symlink { .. } => 0,
+    //         NodeType::Directory { children } => {
+    //             // Process children in parallel
+    //             children.par_iter().map(|child| child.compute_sizes()).sum()
+    //         }
+    //     };
+    //     self.computed_size.store(size, Ordering::SeqCst);
+    //     size
+    // }
 
-    /// Get the computed size (after compute_sizes has been called)
-    pub fn get_computed_size(&self) -> u64 {
-        self.computed_size.load(Ordering::SeqCst)
+    // /// Get the computed size (after compute_sizes has been called)
+    // pub fn get_computed_size(&self) -> u64 {
+    //     self.computed_size.load(Ordering::SeqCst)
+    // }
+
+    pub fn read_metadata(&self) -> Option<NodeMetadata> {
+        self.metadata
+            .read()
+            .map_err(|e| warn!("Failed to get READ lock: '{}'", e))
+            .ok()
+            .and_then(|guard| guard.clone())
     }
 
     /// Create a depth-first iterator
@@ -386,9 +394,12 @@ impl TreeNode {
             NodeType::Symlink { .. } => "🔗",
         };
 
-        let size = self.computed_size.load(Ordering::SeqCst);
+        let size = match self.read_metadata() {
+            Some(v) => v.size, //self.computed_size.load(Ordering::SeqCst);
+            None => 0
+        };
         let size_str = if size > 0 {
-            format!(" ({})", format_size(size))
+            format!(" ({})", format_size(size as u64))
         } else {
             String::new()
         };

@@ -91,33 +91,30 @@ fn main() -> Result<(), Box<dyn Error>> {
     let tree = TreeNode::from_path(
         & target, * follow_links, * valid_symlinks_only
     )?;
-
-    // Compute sizes bottom-up from leaves to root
-
-    let total         = pool.install(|| {tree.compute_sizes()});
-    let (files, dirs) = pool.install(|| {tree.count()});
-
-    println!(
-        "Pass 1: {} files, {} directories, {} total", files, dirs, format_size(total)
-    );
-
+    // Compute metadata bottom-up from leaves to root
     let meta = pool.install(|| {tree.compute_metadata()})?;
+
+    // Display results
     println!(
-        "Pass 2: {} files, {} directories, {} total", 
+        "Indexed: {} files, {} directories, {} total", 
         meta.files, meta.dirs, format_size(meta.size as u64)
     );
 
     // Show the 5 largest nodes
     println!("--- Largest Entries ---");
     let mut all_nodes: Vec<_> = tree.collect_all();
-    all_nodes.sort_by(|a, b| b.get_computed_size().cmp(&a.get_computed_size()));
+    all_nodes.sort_by(
+        |a, b| {
+            let meta_a = a.read_metadata().unwrap_or_default();
+            let meta_b = b.read_metadata().unwrap_or_default();
+            meta_b.size.cmp(& meta_a.size)
+    });
     for node in all_nodes.iter().take(5) {
-        println!(
-            "{}: {}",
-            node.path.display(),
-            format_size(node.get_computed_size())
-        );
-    }
+        let meta = node.read_metadata().unwrap_or_default();
+        println!("{}", node.path.display());
+        println!("├── {} files + {} dirs" , meta.files, meta.dirs);
+        println!("└── {} " , format_size(meta.size as u64));
+    };
     println!("-----------------------");
 
     println!("Saving index as: {}", index_path);
