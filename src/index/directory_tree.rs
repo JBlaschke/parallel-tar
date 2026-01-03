@@ -17,10 +17,14 @@ use rayon::prelude::*;
 
 use log::warn;
 
+use rmp_serde;
+
 
 #[derive(Debug)]
 pub enum IndexerError {
     Json(serde_json::Error),
+    IdxEncode(rmp_serde::encode::Error),
+    IdxDecode(rmp_serde::decode::Error),
     Io(std::io::Error),
     InvalidPath(String),
     NotFound(String),
@@ -30,10 +34,12 @@ pub enum IndexerError {
 impl fmt::Display for IndexerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Json(e)        => write!(f, "JSON error: {}",     e),
-            Self::Io(e)          => write!(f, "IO error: {}",       e),
-            Self::InvalidPath(e) => write!(f, "Invalid path: {}",   e),
-            Self::NotFound(e)    => write!(f, "Node not found: {}", e),
+            Self::Json(e)        => write!(f, "JSON error: {}",       e),
+            Self::IdxEncode(e)   => write!(f, "RMP encode error: {}", e),
+            Self::IdxDecode(e)   => write!(f, "RMP decode error: {}", e),
+            Self::Io(e)          => write!(f, "IO error: {}",         e),
+            Self::InvalidPath(e) => write!(f, "Invalid path: {}",     e),
+            Self::NotFound(e)    => write!(f, "Node not found: {}",   e),
             Self::LockPoisoned   => write!(f, "Lock Poisoned")
         }
     }
@@ -57,6 +63,18 @@ impl From<std::io::Error> for IndexerError {
 impl From<serde_json::Error> for IndexerError {
     fn from(e: serde_json::Error) -> Self {
         Self::Json(e)
+    }
+}
+
+impl From<rmp_serde::encode::Error> for IndexerError {
+    fn from(e: rmp_serde::encode::Error) -> Self {
+        Self::IdxEncode(e)
+    }
+}
+
+impl From<rmp_serde::decode::Error> for IndexerError {
+    fn from(e: rmp_serde::decode::Error) -> Self {
+        Self::IdxDecode(e)
     }
 }
 
@@ -104,10 +122,6 @@ pub struct SerializedTreeNode {
     pub node_type: SerializedNodeType,
     pub metadata: Option<NodeMetadata>
 }
-
-// Explicitly implement Sync since AtomicU64 is Sync and our other fields are
-// Sync
-//unsafe impl Sync for TreeNode {}
 
 impl TreeNode {
     pub fn to_serializable(&self) -> Result<SerializedTreeNode, IndexerError> {
@@ -437,8 +451,14 @@ impl Iterator for BreadthFirstIter {
     }
 }
 
+#[derive(Debug)]
+pub enum DataFmt {
+    Json(String),
+    Idx(String)
+}
+
 // Serialize to JSON
-pub fn save_tree(tree: &TreeNode, path: &str) -> Result<(), IndexerError> {
+fn save_tree_json(tree: &TreeNode, path: &str) -> Result<(), IndexerError> {
     let file = File::create(path)?;
     let writer = BufWriter::new(file);
     let serializable = tree.to_serializable()?;
@@ -447,9 +467,40 @@ pub fn save_tree(tree: &TreeNode, path: &str) -> Result<(), IndexerError> {
 }
 
 // Deserialize from JSON
-pub fn load_tree(path: &str) -> Result<Arc<TreeNode>, IndexerError> {
+fn load_tree_json(path: &str) -> Result<Arc<TreeNode>, IndexerError> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
     let serializable: SerializedTreeNode = serde_json::from_reader(reader)?;
     Ok(TreeNode::from_serializable(serializable))
+}
+
+// Serialize to Message Pack
+fn save_tree_rmp(tree: &TreeNode, path: &str) -> Result<(), IndexerError> {
+    let file = File::create(path)?;
+    let mut writer = BufWriter::new(file);
+    let serializable = tree.to_serializable()?;
+    rmp_serde::encode::write(&mut writer, &serializable)?;
+    Ok(())
+}
+
+// Deserialize from Message Pack
+fn load_tree_rmp(path: &str) -> Result<Arc<TreeNode>, IndexerError> {
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    let serializable: SerializedTreeNode = rmp_serde::decode::from_read(reader)?;
+    Ok(TreeNode::from_serializable(serializable))
+}
+
+pub fn save_tree(tree: &TreeNode, fmt: DataFmt) -> Result<(), IndexerError> {
+    match fmt {
+        DataFmt::Json(path) => save_tree_json(tree, & path),
+        DataFmt::Idx(path)  => save_tree_rmp(tree, & path)
+    }
+}
+
+pub fn load_tree(fmt: DataFmt) -> Result<Arc<TreeNode>, IndexerError> {
+    match fmt {
+        DataFmt::Json(path) => load_tree_json(& path),
+        DataFmt::Idx(path)  => load_tree_rmp(& path)
+    }
 }

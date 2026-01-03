@@ -6,7 +6,7 @@ use std::sync::Arc;
 use clap::{Arg, Command};
 
 mod index;
-use crate::index::directory_tree::{TreeNode, format_size, load_tree};
+use crate::index::directory_tree::{TreeNode, format_size, load_tree, DataFmt};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Command::new("Index viewer and search tool for Parallel Tar")
@@ -38,8 +38,17 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let index_path: &String = get_arg(& args, "index_path")?;
-    println!("Loading index at: '{}'", index_path);
-    let tree: Arc<TreeNode> = load_tree(index_path)?;
+    let json_fmt: &bool     = get_arg(& args, "json_fmt")?;
+
+    let data_fmt = if * json_fmt {
+        DataFmt::Json(index_path.to_string())
+    } else {
+        DataFmt::Idx(index_path.to_string())
+    };
+
+    println!("Loading index at: '{:?}'", data_fmt);
+    let tree: Arc<TreeNode> = load_tree(data_fmt)?;
+
     let meta = tree.read_metadata().unwrap_or_default();
 
     println!("Done loading!");

@@ -5,7 +5,7 @@ use std::error::Error;
 use clap::{Arg, Command};
 
 mod index;
-use crate::index::directory_tree::{TreeNode, format_size, save_tree};
+use crate::index::directory_tree::{TreeNode, format_size, save_tree, DataFmt};
 
 use rayon::ThreadPoolBuilder;
 
@@ -79,6 +79,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let target: &String            = get_arg(& args, "target")?;
     let index_path: &String        = get_arg(& args, "index_path")?;
     let num_threads: &u32          = get_arg(& args, "num_threads")?;
+    let json_fmt: &bool            = get_arg(& args, "json_fmt")?;
     let follow_links: &bool        = get_arg(& args, "follow_links")?;
     let valid_symlinks_only: &bool = get_arg(& args, "valid_symlinks_only")?;
 
@@ -117,8 +118,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
     println!("-----------------------");
 
-    println!("Saving index as: {}", index_path);
-    let _ = save_tree(& tree, & index_path);
+    let data_fmt = if * json_fmt {
+        DataFmt::Json(index_path.to_string())
+    } else {
+        DataFmt::Idx(index_path.to_string())
+    };
+    println!("Saving index: '{:?}'", data_fmt);
+    let _ = save_tree(& tree, data_fmt);
 
     Ok(())
 }
