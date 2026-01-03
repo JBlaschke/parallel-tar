@@ -3,26 +3,36 @@ use std::fs;
 use std::fs::Metadata;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use std::error::Error;
 use std::fmt;
+
+use serde::{Deserialize, Serialize};
+use serde_json;
+
+use std::fs::File;
+use std::io::{BufReader, BufWriter};
 
 use rayon::prelude::*;
 
 #[derive(Debug)]
 pub enum IndexerError {
+    Json(serde_json::Error),
     Io(std::io::Error),
     InvalidPath(String),
     NotFound(String),
+    LockPoisoned
 }
 
 impl fmt::Display for IndexerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Io(e) => write!(f, "IO error: {}", e),
-            Self::InvalidPath(p) => write!(f, "invalid path: {}", p),
-            Self::NotFound(p) => write!(f, "node not found: {}", p),
+            Self::Json(e)        => write!(f, "JSON error: {}",     e),
+            Self::Io(e)          => write!(f, "IO error: {}",       e),
+            Self::InvalidPath(e) => write!(f, "Invalid path: {}",   e),
+            Self::NotFound(e)    => write!(f, "Node not found: {}", e),
+            Self::LockPoisoned   => write!(f, "Lock Poisoned")
         }
     }
 }
@@ -42,11 +52,37 @@ impl From<std::io::Error> for IndexerError {
     }
 }
 
+impl From<serde_json::Error> for IndexerError {
+    fn from(e: serde_json::Error) -> Self {
+        Self::Json(e)
+    }
+}
+
+impl<T> From<std::sync::PoisonError<T>> for IndexerError {
+    fn from(_: std::sync::PoisonError<T>) -> Self {
+        IndexerError::LockPoisoned
+    }
+}
+
 #[derive(Debug)]
 pub enum NodeType {
     File { size: u64 },
     Directory { children: Vec<Arc<TreeNode>> },
     Symlink { target: PathBuf },
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum SerializedNodeType {
+    File { size: u64 },
+    Directory { children: Vec<SerializedTreeNode> },
+    Symlink { target: PathBuf },
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
+pub struct NodeMetadata {
+    pub size:  usize,
+    pub files: usize,
+    pub dirs:  usize
 }
 
 #[derive(Debug)]
@@ -55,13 +91,74 @@ pub struct TreeNode {
     pub path: PathBuf,
     pub node_type: NodeType,
     pub computed_size: AtomicU64,
+    pub metadata: RwLock<Option<NodeMetadata>>
 }
 
-// Explicitly implement Sync since AtomicU64 is Sync
-// and our other fields are Sync
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SerializedTreeNode {
+    pub name: String,
+    pub path: PathBuf,
+    pub node_type: SerializedNodeType,
+    pub computed_size: u64,
+    pub metadata: Option<NodeMetadata>
+}
+
+// Explicitly implement Sync since AtomicU64 is Sync and our other fields are
+// Sync
 unsafe impl Sync for TreeNode {}
 
 impl TreeNode {
+    pub fn to_serializable(&self) -> Result<SerializedTreeNode, IndexerError> {
+        let node_type = match & self.node_type {
+            NodeType::File { size } => SerializedNodeType::File {
+                size: *size
+            },
+            NodeType::Directory { children } => {
+                let children: Result<Vec<_>, IndexerError> = children
+                    .iter()
+                    .map(|c| c.to_serializable())
+                    .collect();
+                let children = children?;
+                SerializedNodeType::Directory { children }
+            },
+            NodeType::Symlink { target } => SerializedNodeType::Symlink {
+                target: target.clone(),
+            },
+        };
+
+        Ok(SerializedTreeNode {
+            name: self.name.clone(),
+            path: self.path.clone(),
+            node_type,
+            computed_size: self.computed_size.load(Ordering::SeqCst),
+            metadata: * self.metadata.read()?
+        })
+    }
+
+    pub fn from_serializable(s: SerializedTreeNode) -> Arc<Self> {
+        let node_type = match s.node_type {
+            SerializedNodeType::File { size } => NodeType::File {
+                size: size
+            },
+            SerializedNodeType::Directory { children } => NodeType::Directory {
+                children: children.into_iter().map(
+                    TreeNode::from_serializable
+                ).collect(),
+            },
+            SerializedNodeType::Symlink { target } => NodeType::Symlink {
+                target: target
+            },
+        };
+
+        Arc::new(TreeNode {
+            name: s.name,
+            path: s.path,
+            node_type,
+            computed_size: AtomicU64::new(s.computed_size),
+            metadata: s.metadata.into()
+        })
+    }
+
     fn node_type_from_path(
                 path: impl AsRef<Path>,
                 follow_symlinks: bool,
@@ -126,8 +223,7 @@ impl TreeNode {
                 mut valid_symlinks_only: bool
             ) -> Result<Arc<Self>, IndexerError> {
 
-        let path: &Path        = path.as_ref();
-        let metadata: Metadata = fs::symlink_metadata(path)?;
+        let path: &Path = path.as_ref();
         // Can't follow invalid symlinks
         if follow_symlinks {
             valid_symlinks_only = true;
@@ -150,6 +246,7 @@ impl TreeNode {
             path: path.to_path_buf(),
             node_type,
             computed_size: AtomicU64::new(0),
+            metadata: RwLock::new(None)
         }))
     }
 
@@ -161,30 +258,73 @@ impl TreeNode {
         }
     }
 
-    /// Compute sizes bottom-up sequentially
+    fn reduce_metadata(
+                md1: Result<NodeMetadata, IndexerError>,
+                md2: Result<NodeMetadata, IndexerError>,
+            ) -> Result<NodeMetadata, IndexerError> {
+        let md1 = md1?;
+        let md2 = md2?;
+
+        return Ok(NodeMetadata {
+            size:  md1.size  + md2.size,
+            files: md1.files + md2.files,
+            dirs:  md1.dirs  + md2.dirs
+        });
+    }
+
+    /// Compute metadata bottom-up in parallel using rayon
+    pub fn compute_metadata(&self) -> Result<NodeMetadata, IndexerError> {
+        // Lock the metadata field for writing. Lock all metadata at once, to
+        // avoid corruption due to different metadata fields being potentially
+        // updated by different update passes.
+        let mut guard = self.metadata.write()?;
+
+        let meta = match &self.node_type {
+            NodeType::File { size } => NodeMetadata {
+                size: * size as usize,
+                files:  1,
+                dirs:   0
+            },
+            NodeType::Symlink { .. } => NodeMetadata {
+                size:  0,
+                files: 1,
+                dirs:  0
+            },
+            NodeType::Directory { children } => {
+                // Process children in parallel. Note: this is Rayon's reduce operation:
+                // rayon/iter/trait.ParallelIterator.html#method.reduce
+                let c_meta = children
+                    .par_iter()
+                    .map(|child| child.compute_metadata())
+                    .reduce(
+                        || Ok(NodeMetadata {
+                            size:  0,
+                            files: 0,
+                            dirs:  0
+                        }),
+                        |md1, md2| Self::reduce_metadata(md1, md2),
+                    )?;
+                NodeMetadata {
+                    size:  c_meta.size,
+                    files: c_meta.files,
+                    // remember to also count _this_ directory
+                    dirs:  c_meta.dirs + 1
+                }
+            }
+        };
+
+        *guard = Some(meta);
+        return Ok(meta);
+    }
+
+    /// Compute sizes bottom-up in parallel using rayon
     pub fn compute_sizes(&self) -> u64 {
         let size = match &self.node_type {
             NodeType::File { size } => *size,
             NodeType::Symlink { .. } => 0,
             NodeType::Directory { children } => {
-                children.iter().map(|child| child.compute_sizes()).sum()
-            }
-        };
-        self.computed_size.store(size, Ordering::SeqCst);
-        size
-    }
-
-    /// Compute sizes bottom-up in parallel using rayon
-    pub fn compute_sizes_parallel(&self) -> u64 {
-        let size = match &self.node_type {
-            NodeType::File { size } => *size,
-            NodeType::Symlink { .. } => 0,
-            NodeType::Directory { children } => {
                 // Process children in parallel
-                children
-                    .par_iter()
-                    .map(|child| child.compute_sizes_parallel())
-                    .sum()
+                children.par_iter().map(|child| child.compute_sizes()).sum()
             }
         };
         self.computed_size.store(size, Ordering::SeqCst);
@@ -243,26 +383,14 @@ impl TreeNode {
 
     /// Count total files and directories
     pub fn count(&self) -> (usize, usize) {
-        match &self.node_type {
-            NodeType::File { .. } | NodeType::Symlink { .. } => (1, 0),
-            NodeType::Directory { children } => {
-                let (files, dirs) = children
-                    .iter()
-                    .map(|c| c.count())
-                    .fold((0, 0), |(f1, d1), (f2, d2)| (f1 + f2, d1 + d2));
-                (files, dirs + 1)
-            }
-        }
-    }
-
-    /// Count in parallel
-    pub fn count_parallel(&self) -> (usize, usize) {
-        match &self.node_type {
+        match & self.node_type {
             NodeType::File { .. } | NodeType::Symlink { .. } => (1, 0),
             NodeType::Directory { children } => {
                 let (files, dirs) = children
                     .par_iter()
-                    .map(|c| c.count_parallel())
+                    .map(|c| c.count())
+                    // Note: this is Rayon's Reduce operation:
+                    // https://docs.rs/rayon/latest/rayon/iter/trait.ParallelIterator.html#method.reduce
                     .reduce(|| (0, 0), |(f1, d1), (f2, d2)| (f1 + f2, d1 + d2));
                 (files, dirs + 1)
             }
@@ -322,4 +450,21 @@ impl Iterator for BreadthFirstIter {
 
         Some(node)
     }
+}
+
+// Serialize to JSON
+pub fn save_tree(tree: &TreeNode, path: &str) -> Result<(), IndexerError> {
+    let file = File::create(path)?;
+    let writer = BufWriter::new(file);
+    let serializable = tree.to_serializable()?;
+    serde_json::to_writer_pretty(writer, &serializable)?;
+    Ok(())
+}
+
+// Deserialize from JSON
+pub fn load_tree(path: &str) -> Result<Arc<TreeNode>, IndexerError> {
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    let serializable: SerializedTreeNode = serde_json::from_reader(reader)?;
+    Ok(TreeNode::from_serializable(serializable))
 }

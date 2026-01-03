@@ -5,7 +5,7 @@ use std::error::Error;
 use clap::{Arg, Command};
 
 mod index;
-use crate::index::directory_tree::{TreeNode, format_size};
+use crate::index::directory_tree::{TreeNode, format_size, save_tree};
 
 use rayon::ThreadPoolBuilder;
 
@@ -14,7 +14,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let args = Command::new("Indexer for Parallel Tar")
         .version("2.0")
         .author("Johannes Blaschke")
-        .about("Add target directory to parallel list of Tar archives.")
+        .about("Create an index of files in a directory structure")
         .arg(
             Arg::new("target")
             .value_name("TARGET")
@@ -39,12 +39,20 @@ fn main() -> Result<(), Box<dyn Error>> {
             .num_args(0)
         )
         .arg(
-            Arg::new("index_nmae")
+            Arg::new("index_path")
             .short('f')
             .long("file")
-            .help("Name of the index file")
+            .help("Path of the index file")
             .required(true)
             .num_args(1)
+        )
+        .arg(
+            Arg::new("json_fmt")
+            .short('j')
+            .long("json")
+            .help("Output index as JSON.")
+            .required(false)
+            .num_args(0)
         )
         .arg(
             Arg::new("num_threads")
@@ -63,7 +71,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let target: &String            = get_arg(& args, "target")?;
-    // let index_name: &String = get_arg(&args, "index_name")?;
+    let index_path: &String        = get_arg(& args, "index_path")?;
     let num_threads: &u32          = get_arg(& args, "num_threads")?;
     let follow_links: &bool        = get_arg(& args, "follow_links")?;
     let valid_symlinks_only: &bool = get_arg(& args, "valid_symlinks_only")?;
@@ -72,7 +80,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let nproc: usize = * num_threads as usize;
     let pool = ThreadPoolBuilder::new().num_threads(nproc).build()?;
 
-    println!("Building tree for: {} using {} threads\n", target, nproc);
+    println!("Building tree for: '{}' using {} threads...", target, nproc);
 
     let tree = TreeNode::from_path(
         & target, * follow_links, * valid_symlinks_only
@@ -80,23 +88,21 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Compute sizes bottom-up from leaves to root
 
-    // let total = tree.compute_sizes();
-    let total = pool.install(|| {tree.compute_sizes_parallel()});
-
-    //tree.print_tree("", true);
-
-    // let (files, dirs) = tree.count();
-    let (files, dirs) = pool.install(|| {tree.count_parallel()});
+    let total         = pool.install(|| {tree.compute_sizes()});
+    let (files, dirs) = pool.install(|| {tree.count()});
 
     println!(
-        "\n{} files, {} directories, {} total",
-        files,
-        dirs,
-        format_size(total)
+        "Pass 1: {} files, {} directories, {} total", files, dirs, format_size(total)
+    );
+
+    let meta = pool.install(|| {tree.compute_metadata()})?;
+    println!(
+        "Pass 2: {} files, {} directories, {} total", 
+        meta.files, meta.dirs, format_size(meta.size as u64)
     );
 
     // Show the 5 largest nodes
-    println!("\n--- Largest Entries ---");
+    println!("--- Largest Entries ---");
     let mut all_nodes: Vec<_> = tree.collect_all();
     all_nodes.sort_by(|a, b| b.get_computed_size().cmp(&a.get_computed_size()));
     for node in all_nodes.iter().take(5) {
@@ -106,5 +112,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             format_size(node.get_computed_size())
         );
     }
+    println!("-----------------------");
+
+    println!("Saving index as: {}", index_path);
+    let _ = save_tree(& tree, & index_path);
+
     Ok(())
 }
