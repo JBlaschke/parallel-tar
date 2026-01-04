@@ -6,7 +6,8 @@ use std::sync::Arc;
 use clap::{Arg, Command};
 
 mod index;
-use crate::index::directory_tree::{TreeNode, format_size, load_tree, DataFmt};
+use crate::index::tree::{TreeNode, format_size};
+use crate::index::serialize::{DataFmt, load_tree};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Command::new("Index viewer and search tool for Parallel Tar")

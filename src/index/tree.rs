@@ -1,101 +1,26 @@
+use crate::index::error::IndexerError;
+
+// Serde serialization (for NodeMetadata)
+use serde::{Deserialize, Serialize};
+
 use std::collections::VecDeque;
 use std::fs;
 use std::fs::{File, Metadata};
 use std::path::{Path, PathBuf};
-// use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
-use std::error::Error;
-use std::fmt;
-
-use serde::{Deserialize, Serialize};
-use serde_json;
-
-use std::io::{BufReader, BufWriter};
+use std::io::{Read, BufReader, BufWriter};
 
 use rayon::prelude::*;
 
 use log::warn;
 
-use rmp_serde;
-
-
-#[derive(Debug)]
-pub enum IndexerError {
-    Json(serde_json::Error),
-    IdxEncode(rmp_serde::encode::Error),
-    IdxDecode(rmp_serde::decode::Error),
-    Io(std::io::Error),
-    InvalidPath(String),
-    NotFound(String),
-    LockPoisoned
-}
-
-impl fmt::Display for IndexerError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Json(e)        => write!(f, "JSON error: {}",       e),
-            Self::IdxEncode(e)   => write!(f, "RMP encode error: {}", e),
-            Self::IdxDecode(e)   => write!(f, "RMP decode error: {}", e),
-            Self::Io(e)          => write!(f, "IO error: {}",         e),
-            Self::InvalidPath(e) => write!(f, "Invalid path: {}",     e),
-            Self::NotFound(e)    => write!(f, "Node not found: {}",   e),
-            Self::LockPoisoned   => write!(f, "Lock Poisoned")
-        }
-    }
-}
-
-impl Error for IndexerError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::Io(e) => Some(e),
-            _ => None,
-        }
-    }
-}
-
-impl From<std::io::Error> for IndexerError {
-    fn from(e: std::io::Error) -> Self {
-        Self::Io(e)
-    }
-}
-
-impl From<serde_json::Error> for IndexerError {
-    fn from(e: serde_json::Error) -> Self {
-        Self::Json(e)
-    }
-}
-
-impl From<rmp_serde::encode::Error> for IndexerError {
-    fn from(e: rmp_serde::encode::Error) -> Self {
-        Self::IdxEncode(e)
-    }
-}
-
-impl From<rmp_serde::decode::Error> for IndexerError {
-    fn from(e: rmp_serde::decode::Error) -> Self {
-        Self::IdxDecode(e)
-    }
-}
-
-impl<T> From<std::sync::PoisonError<T>> for IndexerError {
-    fn from(_: std::sync::PoisonError<T>) -> Self {
-        IndexerError::LockPoisoned
-    }
-}
+use sha2::{Sha256, Digest};
 
 #[derive(Debug)]
 pub enum NodeType {
     File { size: u64 },
     Directory { children: Vec<Arc<TreeNode>> },
-    Symlink { target: PathBuf },
-    Unknown {}
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub enum SerializedNodeType {
-    File { size: u64 },
-    Directory { children: Vec<SerializedTreeNode> },
     Symlink { target: PathBuf },
     Unknown {}
 }
@@ -115,66 +40,8 @@ pub struct TreeNode {
     pub metadata: RwLock<Option<NodeMetadata>>
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct SerializedTreeNode {
-    pub name: String,
-    pub path: PathBuf,
-    pub node_type: SerializedNodeType,
-    pub metadata: Option<NodeMetadata>
-}
 
 impl TreeNode {
-    pub fn to_serializable(&self) -> Result<SerializedTreeNode, IndexerError> {
-        let node_type = match & self.node_type {
-            NodeType::File { size } => SerializedNodeType::File {
-                size: *size
-            },
-            NodeType::Directory { children } => {
-                let children: Result<Vec<_>, IndexerError> = children
-                    .iter()
-                    .map(|c| c.to_serializable())
-                    .collect();
-                let children = children?;
-                SerializedNodeType::Directory { children }
-            },
-            NodeType::Symlink { target } => SerializedNodeType::Symlink {
-                target: target.clone(),
-            },
-            NodeType::Unknown {} => SerializedNodeType::Unknown {}
-        };
-
-        Ok(SerializedTreeNode {
-            name: self.name.clone(),
-            path: self.path.clone(),
-            node_type,
-            metadata: * self.metadata.read()?
-        })
-    }
-
-    pub fn from_serializable(s: SerializedTreeNode) -> Arc<Self> {
-        let node_type = match s.node_type {
-            SerializedNodeType::File { size } => NodeType::File {
-                size: size
-            },
-            SerializedNodeType::Directory { children } => NodeType::Directory {
-                children: children.into_iter().map(
-                    TreeNode::from_serializable
-                ).collect(),
-            },
-            SerializedNodeType::Symlink { target } => NodeType::Symlink {
-                target: target
-            },
-            SerializedNodeType::Unknown {} => NodeType::Unknown {}
-        };
-
-        Arc::new(TreeNode {
-            name: s.name,
-            path: s.path,
-            node_type,
-            metadata: s.metadata.into()
-        })
-    }
-
     fn node_type_from_path(
                 path: impl AsRef<Path>,
                 follow_symlinks: bool,
@@ -451,56 +318,3 @@ impl Iterator for BreadthFirstIter {
     }
 }
 
-#[derive(Debug)]
-pub enum DataFmt {
-    Json(String),
-    Idx(String)
-}
-
-// Serialize to JSON
-fn save_tree_json(tree: &TreeNode, path: &str) -> Result<(), IndexerError> {
-    let file = File::create(path)?;
-    let writer = BufWriter::new(file);
-    let serializable = tree.to_serializable()?;
-    serde_json::to_writer_pretty(writer, &serializable)?;
-    Ok(())
-}
-
-// Deserialize from JSON
-fn load_tree_json(path: &str) -> Result<Arc<TreeNode>, IndexerError> {
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
-    let serializable: SerializedTreeNode = serde_json::from_reader(reader)?;
-    Ok(TreeNode::from_serializable(serializable))
-}
-
-// Serialize to Message Pack
-fn save_tree_rmp(tree: &TreeNode, path: &str) -> Result<(), IndexerError> {
-    let file = File::create(path)?;
-    let mut writer = BufWriter::new(file);
-    let serializable = tree.to_serializable()?;
-    rmp_serde::encode::write(&mut writer, &serializable)?;
-    Ok(())
-}
-
-// Deserialize from Message Pack
-fn load_tree_rmp(path: &str) -> Result<Arc<TreeNode>, IndexerError> {
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
-    let serializable: SerializedTreeNode = rmp_serde::decode::from_read(reader)?;
-    Ok(TreeNode::from_serializable(serializable))
-}
-
-pub fn save_tree(tree: &TreeNode, fmt: DataFmt) -> Result<(), IndexerError> {
-    match fmt {
-        DataFmt::Json(path) => save_tree_json(tree, & path),
-        DataFmt::Idx(path)  => save_tree_rmp(tree, & path)
-    }
-}
-
-pub fn load_tree(fmt: DataFmt) -> Result<Arc<TreeNode>, IndexerError> {
-    match fmt {
-        DataFmt::Json(path) => load_tree_json(& path),
-        DataFmt::Idx(path)  => load_tree_rmp(& path)
-    }
-}
