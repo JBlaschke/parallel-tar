@@ -4,7 +4,7 @@ use crate::index::error::IndexerError;
 use std::sync::Arc;
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json;
 use rmp_serde;

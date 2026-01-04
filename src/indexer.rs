@@ -5,8 +5,10 @@ use std::error::Error;
 use clap::{Arg, Command};
 
 mod index;
-use crate::index::tree::{TreeNode, format_size};
+use crate::index::tree::TreeNode;
 use crate::index::serialize::{DataFmt, save_tree};
+use crate::index::display::format_size;
+use crate::index::fs::Filesystem as _;
 
 use rayon::ThreadPoolBuilder;
 
