@@ -17,6 +17,10 @@ sha2 = "0.10.9"
 tar = "0.4.40"
 walkdir = "2.4.0"
 
+[lib]
+name = "ptar_lib"
+path = "src/lib.rs"
+
 [[bin]]
 name = "parallel-tar"
 path = "src/main.rs"
