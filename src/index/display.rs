@@ -17,17 +17,15 @@ impl Display for TreeNode {
             NodeType::Unknown { .. } => "❓",
         };
 
-        let size = match self.read_metadata() {
-            Some(v) => v.size,
-            None => 0
-        };
-        let size_str = if size > 0 {
-            format!(" ({})", format_size(size as u64))
+        let size = self.read_metadata().unwrap_or_default().size;
+        let hash = self.read_hash().unwrap_or_default();
+        let info_str = if size > 0 {
+            format!(" ({}, {:.16})", format_size(size as u64), hash)
         } else {
             String::new()
         };
 
-        println!("{}{}{} {}{}", prefix, connector, icon, self.name, size_str);
+        println!("{}{}{} {}{}", prefix, connector, icon, self.name, info_str);
 
         if let NodeType::Directory { children } = &self.node_type {
             let new_prefix = format!(

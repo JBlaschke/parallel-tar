@@ -108,7 +108,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("Root hash: '{}'", hash);
 
     // Show the 5 largest nodes
-    println!("--- Largest Entries ---");
+    println!("--- Largest Entries ------------------------------------------");
     let mut all_nodes: Vec<_> = tree.collect_all();
     all_nodes.sort_by(
         |a, b| {
@@ -116,13 +116,16 @@ fn main() -> Result<(), Box<dyn Error>> {
             let meta_b = b.read_metadata().unwrap_or_default();
             meta_b.size.cmp(& meta_a.size)
     });
-    for node in all_nodes.iter().take(5) {
+    for (i, node) in all_nodes.iter().take(5).enumerate() {
         let meta = node.read_metadata().unwrap_or_default();
-        println!("{}", node.path.display());
-        println!("├── {} files + {} dirs" , meta.files, meta.dirs);
-        println!("└── {} " , format_size(meta.size as u64));
+        let hash = node.read_hash().unwrap_or_default();
+        println!(
+            "{}: {} is {} files + {} dirs ({}, {})",
+            i, node.path.display(), meta.files, meta.dirs,
+            format_size(meta.size as u64), format!("{:.16}", hash)
+        );
     };
-    println!("-----------------------");
+    println!("--------------------------------------------------------------");
 
     let data_fmt = if * json_fmt {
         DataFmt::Json(index_path.to_string())
