@@ -19,13 +19,9 @@ impl Display for TreeNode {
 
         let size = self.read_metadata().unwrap_or_default().size;
         let hash = self.read_hash().unwrap_or_default();
-        let info_str = if size > 0 {
-            format!(" ({}, {:.16})", format_size(size as u64), hash)
-        } else {
-            String::new()
-        };
+        let info_str = format!("({}, {:.16})", format_size(size as u64), hash);
 
-        println!("{}{}{} {}{}", prefix, connector, icon, self.name, info_str);
+        println!("{}{}{} {} {}", prefix, connector, icon, self.name, info_str);
 
         if let NodeType::Directory { children } = &self.node_type {
             let new_prefix = format!(
