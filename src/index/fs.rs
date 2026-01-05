@@ -1,10 +1,12 @@
 use crate::index::tree::{TreeNode, NodeType};
 use crate::index::error::IndexerError;
-
+// Working with references and concurrent access
 use std::sync::{Arc, RwLock};
+// Working with the file system
 use std::fs;
 use std::fs::Metadata;
 use std::path::{Path, PathBuf};
+// Logging
 use log::warn;
 
 pub trait Filesystem {
@@ -114,7 +116,8 @@ impl Filesystem for TreeNode {
             name,
             path: path.to_path_buf(),
             node_type,
-            metadata: RwLock::new(None)
+            metadata: RwLock::new(None),
+            hash: RwLock::new(None)
         }))
     }
 }

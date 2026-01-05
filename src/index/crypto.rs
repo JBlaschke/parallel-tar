@@ -1,0 +1,108 @@
+use crate::index::tree::{TreeNode, NodeType};
+use crate::index::error::IndexerError;
+
+use sha2::{Sha256, Digest};
+use std::fs::File;
+use std::io::{BufReader, Read};
+use std::path::Path;
+// Used for parallel processing
+use rayon::prelude::*;
+
+pub fn hash_file(path: &Path) -> std::io::Result<String> {
+    let file = File::open(path)?;
+    let mut reader = BufReader::new(file);
+    let mut hasher = Sha256::new();
+
+    let mut buffer = [0u8; 8192];
+    loop {
+        let bytes_read = reader.read(&mut buffer)?;
+        if bytes_read == 0 { break; }
+        hasher.update(&buffer[..bytes_read]);
+    }
+
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+pub fn hash_string(s: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(s.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+pub trait HashedNodes {
+    fn compute_hashes(&self) -> Result<String, IndexerError>;
+}
+
+impl HashedNodes for TreeNode {
+    /// Compute hashes bottom-up: files hash their contents, symlinks are either
+    /// treated as their target file (if the tree is constructed using
+    /// `follow_symlinks = true`) or the target string, directories hash
+    /// their children's (name, hash) pairs.
+    ///
+    /// Explanation of the algorithm for directories: Assume the hashes for all
+    /// children {c1, c2, ..., cn} are known. Each node (cn) has a name
+    /// (cn.name) and a hash (cn.hash) -- both are strings. Sort {c1, c2, ...,
+    /// cn} alphabetically by cn.name. The directory's hash will be the hash of
+    /// the string:
+    /// "$(c1.name)$(c1.hash)$(c2.name)$(c2.hash)...$(cn.name)$(cn.hash)"
+    ///
+    /// `NodeType::Unknown` nodes are hashed by their names only.
+    fn compute_hashes(&self) -> Result<String, IndexerError> {
+        // Shortcut evaluation: if the node already has a hash, then don't need
+        // to re-compute it. Note we're using the raw lock (and not read_hash)
+        // so that we can correcly propagate any errors correcly.
+        match self.hash.read()?.as_ref() {
+            Some(v) => return Ok(v.clone()),
+            None    => {}
+        }
+
+        // If getting here: we don't have a current hash => compute it
+        // recursively.
+        let hash = match &self.node_type {
+            NodeType::File { .. } => {
+                hash_file(&self.path)?
+            },
+            NodeType::Symlink { target } => {
+                // Note that if the tree was constructed using `follow_symlinks
+                // = true` then the node_type will not be a `NoteType::Symlink`
+                hash_string(& target.to_string_lossy())
+            },
+            NodeType::Directory { children } => {
+                // Compute child hashes in parallel
+                let mut child_hashes: Vec<_> = children
+                    .par_iter()
+                    .map(|child| {
+                        let hash = child.compute_hashes()?;
+                        Ok((child.name.clone(), hash))
+                    })
+                    .collect::<Result<Vec<_>, IndexerError>>()?;
+
+                // Algorithm for directories: Assume the hashes for all children
+                // {c1, c2, ..., cn} are known. Each node (cn) has a name
+                // (cn.name) and a hash (cn.hash) -- both are strings. Sort {c1,
+                // c2, ..., cn} alphabetically by cn.name. The directory's hash
+                // will be the hash of the string:
+                // "$(c1.name)$(c1.hash)$(c2.name)$(c2.hash)...$(cn.name)$(cn.hash)"
+
+                // Sort by name (must be after parallel computation)
+                child_hashes.sort_by(|a, b| a.0.cmp(&b.0));
+
+                // Combine
+                let combined: String = child_hashes
+                    .iter()
+                    .flat_map(|(name, hash)| [name.as_str(), hash.as_str()])
+                    .collect();
+
+                hash_string(&combined)
+            },
+            NodeType::Unknown {} => {
+                hash_string(&self.name.to_string())
+            }
+        };
+
+        // Only lock the hash now as we're updating the value:
+        let mut guard = self.hash.write()?;
+        * guard = Some(hash.clone());
+        Ok(hash)
+    }
+}

@@ -12,8 +12,6 @@ use rayon::prelude::*;
 // Used for logging
 use log::warn;
 
-//use sha2::{Sha256, Digest};
-
 #[derive(Debug)]
 pub enum NodeType {
     File { size: u64 },
@@ -34,7 +32,8 @@ pub struct TreeNode {
     pub name: String,
     pub path: PathBuf,
     pub node_type: NodeType,
-    pub metadata: RwLock<Option<NodeMetadata>>
+    pub metadata: RwLock<Option<NodeMetadata>>,
+    pub hash: RwLock<Option<String>>
 }
 
 impl TreeNode {
@@ -102,12 +101,26 @@ impl TreeNode {
             NodeType::Unknown {} => NodeMetadata::default()
         };
 
-        *guard = Some(meta);
+        * guard = Some(meta);
         return Ok(meta);
     }
 
+    /// Access the metadata field (behind the RwLock) for reading -- and copy
+    /// the result. Note that errors (e.g. poisoned locks) are emitted as
+    /// warnings, whereby the result would be the default `NodeMetadata`
     pub fn read_metadata(&self) -> Option<NodeMetadata> {
         self.metadata
+            .read()
+            .map_err(|e| warn!("Failed to get READ lock: '{}'", e))
+            .ok()
+            .and_then(|guard| guard.clone())
+    }
+
+    /// Access the hash field (behind the RwLock) for reading -- and copy the
+    /// result. Note that errors (e.g. poisoned locks) are emitted as warnings,
+    /// whereby the result would be the default `String`
+    pub fn read_hash(&self) -> Option<String> {
+        self.hash
             .read()
             .map_err(|e| warn!("Failed to get READ lock: '{}'", e))
             .ok()

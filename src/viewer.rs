@@ -5,9 +5,10 @@ use std::sync::Arc;
 // Clap
 use clap::{Arg, Command};
 
+use ptar_lib::index::*;
 use ptar_lib::index::tree::TreeNode;
 use ptar_lib::index::serialize::{DataFmt, load_tree};
-use ptar_lib::index::display::{Display as _, format_size};
+use ptar_lib::index::display::format_size;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Command::new("Index viewer and search tool for Parallel Tar")
@@ -51,6 +52,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let tree: Arc<TreeNode> = load_tree(data_fmt)?;
 
     let meta = tree.read_metadata().unwrap_or_default();
+    let hash = tree.read_hash().unwrap_or_default();
 
     println!("Done loading!");
     tree.print_tree("", true);
@@ -59,6 +61,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         "Loaded index containing: {} files, {} directories, {} total",
         meta.files, meta.dirs, format_size(meta.size as u64)
     );
+
+    println!("Root hash: '{}'", hash);
+
     // Show the 5 largest nodes
     println!("--- Largest Entries ---");
     let mut all_nodes: Vec<_> = tree.collect_all();
@@ -72,7 +77,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let meta = node.read_metadata().unwrap_or_default();
         println!("{}", node.path.display());
         println!("├── {} files + {} dirs" , meta.files, meta.dirs);
-        println!("└── {} " , format_size(meta.size as u64));
+        println!("└── {} ", format_size(meta.size as u64));
     };
     println!("-----------------------");
 

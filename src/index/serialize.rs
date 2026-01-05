@@ -23,10 +23,11 @@ pub struct SerializedTreeNode {
     pub name: String,
     pub path: PathBuf,
     pub node_type: SerializedNodeType,
-    pub metadata: Option<NodeMetadata>
+    pub metadata: Option<NodeMetadata>,
+    pub hash: Option<String>
 }
 
-trait Serializeable {
+pub trait Serializeable {
     fn to_serializable(&self) -> Result<SerializedTreeNode, IndexerError>;
     fn from_serializable(s: SerializedTreeNode) -> Arc<Self>;
 }
@@ -55,7 +56,8 @@ impl Serializeable for TreeNode {
             name: self.name.clone(),
             path: self.path.clone(),
             node_type,
-            metadata: * self.metadata.read()?
+            metadata: * self.metadata.read()?,
+            hash: self.hash.read()?.clone()
         })
     }
 
@@ -79,7 +81,8 @@ impl Serializeable for TreeNode {
             name: s.name,
             path: s.path,
             node_type,
-            metadata: s.metadata.into()
+            metadata: s.metadata.into(),
+            hash: s.hash.into()
         })
     }
 }

@@ -4,10 +4,10 @@ use std::error::Error;
 // Clap
 use clap::{Arg, Command};
 
+use ptar_lib::index::*;
 use ptar_lib::index::tree::TreeNode;
 use ptar_lib::index::serialize::{DataFmt, save_tree};
 use ptar_lib::index::display::format_size;
-use ptar_lib::index::fs::Filesystem as _;
 
 use rayon::ThreadPoolBuilder;
 
@@ -96,12 +96,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     )?;
     // Compute metadata bottom-up from leaves to root
     let meta = pool.install(|| {tree.compute_metadata()})?;
+    // Compute hashes bottom-up from leaves to root
+    let hash = pool.install(|| {tree.compute_hashes()})?;
 
     // Display results
     println!(
         "Indexed: {} files, {} directories, {} total", 
         meta.files, meta.dirs, format_size(meta.size as u64)
     );
+
+    println!("Root hash: '{}'", hash);
 
     // Show the 5 largest nodes
     println!("--- Largest Entries ---");
