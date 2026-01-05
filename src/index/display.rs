@@ -11,10 +11,13 @@ impl Display for TreeNode {
     fn print_tree(self: &Arc<Self>, prefix: &str, is_last: bool) {
         let connector = if is_last { "└── " } else { "├── " };
         let icon = match & self.node_type {
-            NodeType::File { .. } => "📄",
+            NodeType::File { .. }      => "📄",
             NodeType::Directory { .. } => "📁",
-            NodeType::Symlink { .. } => "🔗",
-            NodeType::Unknown { .. } => "❓",
+            NodeType::Symlink { .. }   => "🔗",
+            NodeType::Socket { .. }    => "🔌",
+            NodeType::Fifo { .. }      => "🚰",
+            NodeType::Device { .. }    => "💾",
+            NodeType::Unknown { .. }   => "❓",
         };
 
         let size = self.read_metadata().unwrap_or_default().size;

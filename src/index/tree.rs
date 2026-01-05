@@ -17,6 +17,9 @@ pub enum NodeType {
     File { size: u64 },
     Directory { children: Vec<Arc<TreeNode>> },
     Symlink { target: PathBuf },
+    Socket {},
+    Fifo {},
+    Device {},
     Unknown {}
 }
 
@@ -98,6 +101,9 @@ impl TreeNode {
                     dirs:  c_meta.dirs + 1
                 }
             },
+            NodeType::Socket {} => NodeMetadata::default(),
+            NodeType::Fifo {} => NodeMetadata::default(),
+            NodeType::Device {} => NodeMetadata::default(),
             NodeType::Unknown {} => NodeMetadata::default()
         };
 

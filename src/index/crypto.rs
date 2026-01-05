@@ -137,6 +137,15 @@ impl HashedNodes for TreeNode {
 
                 hash_string(&combined)
             },
+            NodeType::Socket {} => {
+                hash_string(&self.name.to_string())
+            }
+            NodeType::Fifo {} => {
+                hash_string(&self.name.to_string())
+            }
+            NodeType::Device {} => {
+                hash_string(&self.name.to_string())
+            }
             NodeType::Unknown {} => {
                 hash_string(&self.name.to_string())
             }

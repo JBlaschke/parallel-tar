@@ -15,6 +15,9 @@ pub enum SerializedNodeType {
     File { size: u64 },
     Directory { children: Vec<SerializedTreeNode> },
     Symlink { target: PathBuf },
+    Socket {},
+    Fifo {},
+    Device {},
     Unknown {}
 }
 
@@ -49,6 +52,9 @@ impl Serializeable for TreeNode {
             NodeType::Symlink { target } => SerializedNodeType::Symlink {
                 target: target.clone(),
             },
+            NodeType::Socket {} => SerializedNodeType::Socket {},
+            NodeType::Fifo {} => SerializedNodeType::Fifo {},
+            NodeType::Device {} => SerializedNodeType::Device {},
             NodeType::Unknown {} => SerializedNodeType::Unknown {}
         };
 
@@ -74,6 +80,9 @@ impl Serializeable for TreeNode {
             SerializedNodeType::Symlink { target } => NodeType::Symlink {
                 target: target
             },
+            SerializedNodeType::Socket {} => NodeType::Socket {},
+            SerializedNodeType::Fifo {} => NodeType::Fifo {},
+            SerializedNodeType::Device {} => NodeType::Device {},
             SerializedNodeType::Unknown {} => NodeType::Unknown {}
         };
 

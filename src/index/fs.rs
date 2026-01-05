@@ -37,7 +37,8 @@ impl Filesystem for TreeNode {
             valid_symlinks_only = true;
         }
 
-        let node_type = if metadata.is_symlink() {
+        let file_type = metadata.file_type();
+        let node_type = if file_type.is_symlink() {
             let target: PathBuf = match fs::read_link(path) {
                 Ok(v) => v,
                 Err(_) => {
@@ -69,8 +70,27 @@ impl Filesystem for TreeNode {
             }
             children.sort_by(|a, b| a.name.cmp(&b.name));
             NodeType::Directory { children: children }
-        } else {
+        } else if file_type.is_file() {
             NodeType::File { size: metadata.len() }
+        } else {
+            #[cfg(unix)]
+            {
+                // Special treament for Unix sockets on the File System
+                use std::os::unix::fs::FileTypeExt;
+                if file_type.is_socket() {
+                    NodeType::Socket {}
+                } else if file_type.is_fifo() {
+                    NodeType::Fifo {}
+                } else if file_type.is_block_device() || file_type.is_char_device() {
+                    NodeType::Device {}
+                } else {
+                    NodeType::Unknown {}
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                NodeType::Unknown {}
+            }
         };
 
         return Ok(node_type);
