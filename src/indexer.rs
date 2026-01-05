@@ -103,8 +103,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let tree = TreeNode::from_path(
         & target, * follow_links, * valid_symlinks_only
     )?;
+    println!("Computing metadata ...");
     // Compute metadata bottom-up from leaves to root
     let meta = pool.install(|| {tree.compute_metadata()})?;
+    println!("Computing hashes ...");
     // Compute hashes bottom-up from leaves to root
     let hash = pool.install(|| {tree.compute_hashes(*use_md5)})?;
 
