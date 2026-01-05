@@ -1,19 +1,46 @@
 use crate::index::tree::{TreeNode, NodeType};
 use crate::index::error::IndexerError;
 
+// Crypto functions (use MD5 or SHA256)
+use md5;
 use sha2::{Sha256, Digest};
+// File I/O
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::Path;
 // Used for parallel processing
 use rayon::prelude::*;
 
-pub fn hash_file(path: &Path) -> std::io::Result<String> {
+fn hash_file_md5(path: &Path) -> std::io::Result<String> {
+    let file = File::open(path)?;
+    let mut reader = BufReader::new(file);
+    let mut context = md5::Context::new();
+
+    // TODO: buffer size could be a setting -- right now we are using a
+    // hard-coded 1MiB
+    let mut buffer = [0u8; 1048576];
+    loop {
+        let bytes_read = reader.read(&mut buffer)?;
+        if bytes_read == 0 { break; }
+        context.consume(&buffer[..bytes_read]);
+    }
+
+    // Ok(format!("{:x}", hasher.finalize()))
+    Ok(format!("{:x}", context.finalize()))
+}
+
+fn hash_string_md5(s: &str) -> String {
+    format!("{:x}", md5::compute(s.as_bytes()))
+}
+
+fn hash_file_sha256(path: &Path) -> std::io::Result<String> {
     let file = File::open(path)?;
     let mut reader = BufReader::new(file);
     let mut hasher = Sha256::new();
 
-    let mut buffer = [0u8; 8192];
+    // TODO: buffer size could be a setting -- right now we are using a
+    // hard-coded 1MiB
+    let mut buffer = [0u8; 1048576];
     loop {
         let bytes_read = reader.read(&mut buffer)?;
         if bytes_read == 0 { break; }
@@ -23,14 +50,14 @@ pub fn hash_file(path: &Path) -> std::io::Result<String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-pub fn hash_string(s: &str) -> String {
+fn hash_string_sha256(s: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(s.as_bytes());
     format!("{:x}", hasher.finalize())
 }
 
 pub trait HashedNodes {
-    fn compute_hashes(&self) -> Result<String, IndexerError>;
+    fn compute_hashes(&self, use_md5: bool) -> Result<String, IndexerError>;
 }
 
 impl HashedNodes for TreeNode {
@@ -47,7 +74,7 @@ impl HashedNodes for TreeNode {
     /// "$(c1.name)$(c1.hash)$(c2.name)$(c2.hash)...$(cn.name)$(cn.hash)"
     ///
     /// `NodeType::Unknown` nodes are hashed by their names only.
-    fn compute_hashes(&self) -> Result<String, IndexerError> {
+    fn compute_hashes(&self, use_md5: bool) -> Result<String, IndexerError> {
         // Shortcut evaluation: if the node already has a hash, then don't need
         // to re-compute it. Note we're using the raw lock (and not read_hash)
         // so that we can correcly propagate any errors correcly.
@@ -55,6 +82,21 @@ impl HashedNodes for TreeNode {
             Some(v) => return Ok(v.clone()),
             None    => {}
         }
+
+        let hash_file = |path: &Path| -> std::io::Result<String> {
+            if use_md5 {
+                hash_file_md5(path)
+            } else {
+                hash_file_sha256(path)
+            }
+        };
+        let hash_string = |data: &str| -> String {
+            if use_md5 {
+                hash_string_md5(data)
+            } else {
+                hash_string_sha256(data)
+            }
+        };
 
         // If getting here: we don't have a current hash => compute it
         // recursively.
@@ -72,7 +114,7 @@ impl HashedNodes for TreeNode {
                 let mut child_hashes: Vec<_> = children
                     .par_iter()
                     .map(|child| {
-                        let hash = child.compute_hashes()?;
+                        let hash = child.compute_hashes(use_md5)?;
                         Ok((child.name.clone(), hash))
                     })
                     .collect::<Result<Vec<_>, IndexerError>>()?;

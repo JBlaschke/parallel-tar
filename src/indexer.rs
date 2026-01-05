@@ -63,6 +63,14 @@ fn main() -> Result<(), Box<dyn Error>> {
             .num_args(0)
         )
         .arg(
+            Arg::new("use_md5")
+            .short('m')
+            .long("md5")
+            .help("Use MD5 (instead of SHA256) to calculate checksums")
+            .required(false)
+            .num_args(0)
+        )
+        .arg(
             Arg::new("num_threads")
             .short('n')
             .help("Number of parallel threads to use")
@@ -82,6 +90,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let index_path: &String        = get_arg(& args, "index_path")?;
     let num_threads: &u32          = get_arg(& args, "num_threads")?;
     let json_fmt: &bool            = get_arg(& args, "json_fmt")?;
+    let use_md5: &bool             = get_arg(& args, "use_md5")?;
     let follow_links: &bool        = get_arg(& args, "follow_links")?;
     let valid_symlinks_only: &bool = get_arg(& args, "valid_symlinks_only")?;
 
@@ -97,7 +106,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Compute metadata bottom-up from leaves to root
     let meta = pool.install(|| {tree.compute_metadata()})?;
     // Compute hashes bottom-up from leaves to root
-    let hash = pool.install(|| {tree.compute_hashes()})?;
+    let hash = pool.install(|| {tree.compute_hashes(*use_md5)})?;
 
     // Display results
     println!(
