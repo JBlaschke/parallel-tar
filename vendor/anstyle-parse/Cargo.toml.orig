@@ -1,15 +1,18 @@
 [package]
 name = "anstyle-parse"
-version = "0.2.1"
+version = "0.2.7"
 description = "Parse ANSI Style Escapes"
-repository = "https://github.com/rust-cli/anstyle.git"
-homepage = "https://github.com/rust-cli/anstyle"
 categories = ["command-line-interface"]
 keywords = ["ansi", "terminal", "color", "vte"]
+repository.workspace = true
 license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 include.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs", "--generate-link-to-definition"]
 
 [package.metadata.release]
 pre-release-replacements = [
@@ -30,12 +33,16 @@ core = ["dep:arrayvec"]
 utf8 = ["dep:utf8parse"]
 
 [dev-dependencies]
-codegenrs = { version = "2.0.0", default-features = false }
-criterion = "0.4.0"
-proptest = "1.1.0"
-snapbox = { version = "0.4.11", features = ["path"] }
+codegenrs = { version = "3.0.1", default-features = false }
+divan = "0.1.14"
+proptest = "1.4.0"
+snapbox = "0.6.5"
 vte_generate_state_changes = { version = "0.1.1" }
 
 [[bench]]
 name = "parse"
 harness = false
+required-features = ["utf8"]
+
+[lints]
+workspace = true

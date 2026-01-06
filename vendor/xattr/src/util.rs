@@ -1,65 +1,57 @@
-use std::ffi::CString;
-use std::ffi::OsStr;
 use std::io;
-use std::os::unix::ffi::OsStrExt;
-use std::path::Path;
-use std::ptr;
-
-use libc::{ssize_t, ERANGE};
-
-// Need to use this one as libc only defines this on supported platforms. Given
-// that we want to at least compile on unsupported platforms, we define this in
-// our platform-specific modules.
-use crate::sys::ENOATTR;
-
-#[allow(dead_code)]
-pub fn name_to_c(name: &OsStr) -> io::Result<CString> {
-    match CString::new(name.as_bytes()) {
-        Ok(name) => Ok(name),
-        Err(_) => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "name must not contain null bytes",
-        )),
-    }
-}
-
-pub fn path_to_c(path: &Path) -> io::Result<CString> {
-    match CString::new(path.as_os_str().as_bytes()) {
-        Ok(name) => Ok(name),
-        Err(_) => Err(io::Error::new(io::ErrorKind::NotFound, "file not found")),
-    }
-}
+use std::mem::MaybeUninit;
 
 pub fn extract_noattr(result: io::Result<Vec<u8>>) -> io::Result<Option<Vec<u8>>> {
-    result.map(Some).or_else(|e| match e.raw_os_error() {
-        Some(ENOATTR) => Ok(None),
-        _ => Err(e),
+    result.map(Some).or_else(|e| {
+        if e.raw_os_error() == Some(crate::sys::ENOATTR) {
+            Ok(None)
+        } else {
+            Err(e)
+        }
     })
 }
 
-pub unsafe fn allocate_loop<F: FnMut(*mut u8, usize) -> ssize_t>(mut f: F) -> io::Result<Vec<u8>> {
+/// Calls `get_value` to with a buffer and `get_size` to estimate the size of the buffer if/when
+/// `get_value` returns ERANGE.
+#[allow(dead_code)]
+pub fn allocate_loop<F, S>(mut get_value: F, mut get_size: S) -> io::Result<Vec<u8>>
+where
+    F: for<'a> FnMut(&'a mut [MaybeUninit<u8>]) -> io::Result<&'a mut [u8]>,
+    S: FnMut() -> io::Result<usize>,
+{
+    // Start by assuming the return value is <= 4KiB. If it is, we can do this in one syscall.
+    const INITIAL_BUFFER_SIZE: usize = 4096;
+    match get_value(&mut [MaybeUninit::<u8>::uninit(); INITIAL_BUFFER_SIZE]) {
+        Ok(val) => return Ok(val.to_vec()),
+        Err(e) if e.raw_os_error() != Some(crate::sys::ERANGE) => return Err(e),
+        _ => {}
+    }
+
+    // If that fails, we ask for the size and try again with a buffer of the correct size.
     let mut vec: Vec<u8> = Vec::new();
     loop {
-        let ret = (f)(ptr::null_mut(), 0);
-        if ret < 0 {
-            return Err(io::Error::last_os_error());
-        } else if ret == 0 {
-            break;
-        }
-        vec.reserve_exact(ret as usize);
-
-        let ret = (f)(vec.as_mut_ptr(), vec.capacity());
-        if ret >= 0 {
-            vec.set_len(ret as usize);
-            break;
-        } else {
-            let error = io::Error::last_os_error();
-            if error.raw_os_error() == Some(ERANGE) {
-                continue;
+        vec.reserve_exact(get_size()?);
+        match get_value(vec.spare_capacity_mut()) {
+            Ok(initialized) => {
+                unsafe {
+                    let len = initialized.len();
+                    assert_eq!(
+                        initialized.as_ptr(),
+                        vec.as_ptr(),
+                        "expected the same buffer"
+                    );
+                    vec.set_len(len);
+                }
+                // Only shrink to fit if we've over-allocated by MORE than one byte. Unfortunately,
+                // on FreeBSD, we have to over-allocate by one byte to determine if we've read all
+                // the attributes.
+                if vec.capacity() > vec.len() + 1 {
+                    vec.shrink_to_fit();
+                }
+                return Ok(vec);
             }
-            return Err(error);
+            Err(e) if e.raw_os_error() != Some(crate::sys::ERANGE) => return Err(e),
+            _ => {} // try again
         }
     }
-    vec.shrink_to_fit();
-    Ok(vec)
 }

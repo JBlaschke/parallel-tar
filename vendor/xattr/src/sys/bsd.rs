@@ -1,57 +1,82 @@
 //! FreeBSD and NetBSD xattr support.
 
-use std::ffi::{CString, OsStr, OsString};
-use std::io;
-use std::mem;
-use std::os::unix::ffi::{OsStrExt, OsStringExt};
-use std::os::unix::io::RawFd;
-use std::path::Path;
-
 use libc::{c_int, c_void, size_t, EPERM};
+use std::ffi::{CString, OsStr, OsString};
+use std::mem::MaybeUninit;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::os::unix::io::{AsRawFd, BorrowedFd};
+use std::path::Path;
+use std::ptr;
+use std::{io, slice};
 
 use libc::{
-    extattr_delete_fd, extattr_delete_link, extattr_get_fd, extattr_get_link, extattr_list_fd,
-    extattr_list_link, extattr_set_fd, extattr_set_link, EXTATTR_NAMESPACE_SYSTEM,
-    EXTATTR_NAMESPACE_USER,
+    extattr_delete_fd, extattr_delete_file, extattr_delete_link, extattr_get_fd, extattr_get_file,
+    extattr_get_link, extattr_list_fd, extattr_list_file, extattr_list_link, extattr_set_fd,
+    extattr_set_file, extattr_set_link, EXTATTR_NAMESPACE_SYSTEM, EXTATTR_NAMESPACE_USER,
 };
 
-use crate::util::{allocate_loop, path_to_c};
+pub const ENOATTR: i32 = libc::ENOATTR;
+pub const ERANGE: i32 = libc::ERANGE;
 
-const EXTATTR_NAMESPACE_USER_STRING: &'static str = "user";
-const EXTATTR_NAMESPACE_SYSTEM_STRING: &'static str = "system";
-const EXTATTR_NAMESPACE_NAMES: [&'static str; 3] = [
+const EXTATTR_NAMESPACE_USER_STRING: &str = "user";
+const EXTATTR_NAMESPACE_SYSTEM_STRING: &str = "system";
+const EXTATTR_NAMESPACE_NAMES: [&str; 3] = [
     "empty",
     EXTATTR_NAMESPACE_USER_STRING,
     EXTATTR_NAMESPACE_SYSTEM_STRING,
 ];
 
+fn path_to_c(path: &Path) -> io::Result<CString> {
+    match CString::new(path.as_os_str().as_bytes()) {
+        Ok(name) => Ok(name),
+        Err(_) => Err(io::Error::new(io::ErrorKind::NotFound, "file not found")),
+    }
+}
+
+#[inline]
+fn cvt(res: libc::ssize_t) -> io::Result<usize> {
+    if res < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(res as usize)
+    }
+}
+
+#[inline]
+fn slice_parts(buf: &mut [MaybeUninit<u8>]) -> (*mut c_void, size_t) {
+    if buf.is_empty() {
+        (ptr::null_mut(), 0)
+    } else {
+        (buf.as_mut_ptr().cast(), buf.len() as size_t)
+    }
+}
+
+fn allocate_loop<F: Fn(*mut c_void, size_t) -> libc::ssize_t>(f: F) -> io::Result<Vec<u8>> {
+    crate::util::allocate_loop(
+        |buf| unsafe {
+            let (ptr, len) = slice_parts(buf);
+            let new_len = cvt(f(ptr, len))?;
+            if new_len < len {
+                Ok(slice::from_raw_parts_mut(ptr.cast(), new_len))
+            } else {
+                // If the length of the value isn't strictly smaller than the length of the value
+                // read, there may be more to read. Fake an ERANGE error so we can try again with a
+                // bigger buffer.
+                Err(io::Error::from_raw_os_error(crate::sys::ERANGE))
+            }
+        },
+        // Estimate size + 1 because, on freebsd, the only way to tell if we've read the entire
+        // value is read a value smaller than the buffer we passed.
+        || Ok(cvt(f(ptr::null_mut(), 0))? + 1),
+    )
+}
+
 /// An iterator over a set of extended attributes names.
+#[derive(Default, Clone)]
 pub struct XAttrs {
     user_attrs: Box<[u8]>,
     system_attrs: Box<[u8]>,
     offset: usize,
-}
-
-impl Clone for XAttrs {
-    fn clone(&self) -> Self {
-        XAttrs {
-            user_attrs: Vec::from(&*self.user_attrs).into_boxed_slice(),
-            system_attrs: Vec::from(&*self.system_attrs).into_boxed_slice(),
-            offset: self.offset,
-        }
-    }
-
-    fn clone_from(&mut self, other: &XAttrs) {
-        self.offset = other.offset;
-
-        let mut data = mem::replace(&mut self.user_attrs, Box::new([])).into_vec();
-        data.extend(other.user_attrs.iter().cloned());
-        self.user_attrs = data.into_boxed_slice();
-
-        data = mem::replace(&mut self.system_attrs, Box::new([])).into_vec();
-        data.extend(other.system_attrs.iter().cloned());
-        self.system_attrs = data.into_boxed_slice();
-    }
 }
 
 impl Iterator for XAttrs {
@@ -137,28 +162,25 @@ fn name_to_ns(name: &OsStr) -> io::Result<(c_int, CString)> {
 }
 
 fn prefix_namespace(attr: &OsStr, ns: c_int) -> OsString {
-    let nsname = EXTATTR_NAMESPACE_NAMES[ns as usize];
-    let mut v = Vec::with_capacity(nsname.as_bytes().len() + attr.as_bytes().len() + 1);
-    v.extend(nsname.as_bytes());
-    v.extend(".".as_bytes());
-    v.extend(attr.as_bytes());
+    let nsname = EXTATTR_NAMESPACE_NAMES[ns as usize].as_bytes();
+    let attr = attr.as_bytes();
+    let mut v = Vec::with_capacity(nsname.len() + attr.len() + 1);
+    v.extend_from_slice(nsname);
+    v.extend_from_slice(b".");
+    v.extend_from_slice(attr);
     OsString::from_vec(v)
 }
 
-pub fn get_fd(fd: RawFd, name: &OsStr) -> io::Result<Vec<u8>> {
+pub fn get_fd(fd: BorrowedFd<'_>, name: &OsStr) -> io::Result<Vec<u8>> {
     let (ns, name) = name_to_ns(name)?;
-    unsafe {
-        allocate_loop(|buf, len| {
-            extattr_get_fd(fd, ns, name.as_ptr(), buf as *mut c_void, len as size_t)
-        })
-    }
+    unsafe { allocate_loop(|ptr, len| extattr_get_fd(fd.as_raw_fd(), ns, name.as_ptr(), ptr, len)) }
 }
 
-pub fn set_fd(fd: RawFd, name: &OsStr, value: &[u8]) -> io::Result<()> {
+pub fn set_fd(fd: BorrowedFd<'_>, name: &OsStr, value: &[u8]) -> io::Result<()> {
     let (ns, name) = name_to_ns(name)?;
     let ret = unsafe {
         extattr_set_fd(
-            fd,
+            fd.as_raw_fd(),
             ns,
             name.as_ptr(),
             value.as_ptr() as *const c_void,
@@ -172,9 +194,9 @@ pub fn set_fd(fd: RawFd, name: &OsStr, value: &[u8]) -> io::Result<()> {
     }
 }
 
-pub fn remove_fd(fd: RawFd, name: &OsStr) -> io::Result<()> {
+pub fn remove_fd(fd: BorrowedFd<'_>, name: &OsStr) -> io::Result<()> {
     let (ns, name) = name_to_ns(name)?;
-    let ret = unsafe { extattr_delete_fd(fd, ns, name.as_ptr()) };
+    let ret = unsafe { extattr_delete_fd(fd.as_raw_fd(), ns, name.as_ptr()) };
     if ret != 0 {
         Err(io::Error::last_os_error())
     } else {
@@ -182,15 +204,10 @@ pub fn remove_fd(fd: RawFd, name: &OsStr) -> io::Result<()> {
     }
 }
 
-pub fn list_fd(fd: RawFd) -> io::Result<XAttrs> {
+pub fn list_fd(fd: BorrowedFd<'_>) -> io::Result<XAttrs> {
     let sysvec = unsafe {
-        let res = allocate_loop(|buf, len| {
-            extattr_list_fd(
-                fd,
-                EXTATTR_NAMESPACE_SYSTEM,
-                buf as *mut c_void,
-                len as size_t,
-            )
+        let res = allocate_loop(|ptr, len| {
+            extattr_list_fd(fd.as_raw_fd(), EXTATTR_NAMESPACE_SYSTEM, ptr, len)
         });
         // On FreeBSD, system attributes require root privileges to view. However,
         // to mimic the behavior of listxattr in linux and osx, we need to query
@@ -208,18 +225,7 @@ pub fn list_fd(fd: RawFd) -> io::Result<XAttrs> {
     };
 
     let uservec = unsafe {
-        let res = allocate_loop(|buf, len| {
-            extattr_list_fd(
-                fd,
-                EXTATTR_NAMESPACE_USER,
-                buf as *mut c_void,
-                len as size_t,
-            )
-        });
-        match res {
-            Ok(v) => v,
-            Err(err) => return Err(err),
-        }
+        allocate_loop(|ptr, len| extattr_list_fd(fd.as_raw_fd(), EXTATTR_NAMESPACE_USER, ptr, len))?
     };
 
     Ok(XAttrs {
@@ -229,27 +235,29 @@ pub fn list_fd(fd: RawFd) -> io::Result<XAttrs> {
     })
 }
 
-pub fn get_path(path: &Path, name: &OsStr) -> io::Result<Vec<u8>> {
+pub fn get_path(path: &Path, name: &OsStr, deref: bool) -> io::Result<Vec<u8>> {
     let (ns, name) = name_to_ns(name)?;
     let path = path_to_c(path)?;
+    let extattr_get_func = if deref {
+        extattr_get_file
+    } else {
+        extattr_get_link
+    };
     unsafe {
-        allocate_loop(|buf, len| {
-            extattr_get_link(
-                path.as_ptr(),
-                ns,
-                name.as_ptr(),
-                buf as *mut c_void,
-                len as size_t,
-            )
-        })
+        allocate_loop(|ptr, len| extattr_get_func(path.as_ptr(), ns, name.as_ptr(), ptr, len))
     }
 }
 
-pub fn set_path(path: &Path, name: &OsStr, value: &[u8]) -> io::Result<()> {
+pub fn set_path(path: &Path, name: &OsStr, value: &[u8], deref: bool) -> io::Result<()> {
     let (ns, name) = name_to_ns(name)?;
     let path = path_to_c(path)?;
+    let extattr_set_func = if deref {
+        extattr_set_file
+    } else {
+        extattr_set_link
+    };
     let ret = unsafe {
-        extattr_set_link(
+        extattr_set_func(
             path.as_ptr(),
             ns,
             name.as_ptr(),
@@ -264,10 +272,15 @@ pub fn set_path(path: &Path, name: &OsStr, value: &[u8]) -> io::Result<()> {
     }
 }
 
-pub fn remove_path(path: &Path, name: &OsStr) -> io::Result<()> {
+pub fn remove_path(path: &Path, name: &OsStr, deref: bool) -> io::Result<()> {
     let (ns, name) = name_to_ns(name)?;
     let path = path_to_c(path)?;
-    let ret = unsafe { extattr_delete_link(path.as_ptr(), ns, name.as_ptr()) };
+    let extattr_delete_func = if deref {
+        extattr_delete_file
+    } else {
+        extattr_delete_link
+    };
+    let ret = unsafe { extattr_delete_func(path.as_ptr(), ns, name.as_ptr()) };
     if ret != 0 {
         Err(io::Error::last_os_error())
     } else {
@@ -275,16 +288,16 @@ pub fn remove_path(path: &Path, name: &OsStr) -> io::Result<()> {
     }
 }
 
-pub fn list_path(path: &Path) -> io::Result<XAttrs> {
+pub fn list_path(path: &Path, deref: bool) -> io::Result<XAttrs> {
     let path = path_to_c(path)?;
+    let extattr_list_func = if deref {
+        extattr_list_file
+    } else {
+        extattr_list_link
+    };
     let sysvec = unsafe {
-        let res = allocate_loop(|buf, len| {
-            extattr_list_link(
-                path.as_ptr(),
-                EXTATTR_NAMESPACE_SYSTEM,
-                buf as *mut c_void,
-                len as size_t,
-            )
+        let res = allocate_loop(|ptr, len| {
+            extattr_list_func(path.as_ptr(), EXTATTR_NAMESPACE_SYSTEM, ptr, len)
         });
         // On FreeBSD, system attributes require root privileges to view. However,
         // to mimic the behavior of listxattr in linux and osx, we need to query
@@ -302,18 +315,9 @@ pub fn list_path(path: &Path) -> io::Result<XAttrs> {
     };
 
     let uservec = unsafe {
-        let res = allocate_loop(|buf, len| {
-            extattr_list_link(
-                path.as_ptr(),
-                EXTATTR_NAMESPACE_USER,
-                buf as *mut c_void,
-                len as size_t,
-            )
-        });
-        match res {
-            Ok(v) => v,
-            Err(err) => return Err(err),
-        }
+        allocate_loop(|ptr, len| {
+            extattr_list_func(path.as_ptr(), EXTATTR_NAMESPACE_USER, ptr, len)
+        })?
     };
 
     Ok(XAttrs {
