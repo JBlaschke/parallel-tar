@@ -8,6 +8,8 @@ use sha2::{Sha256, Digest};
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::Path;
+// Logging
+use log::warn;
 // Used for parallel processing
 use rayon::prelude::*;
 
@@ -102,7 +104,18 @@ impl HashedNodes for TreeNode {
         // recursively.
         let hash = match &self.node_type {
             NodeType::File { .. } => {
-                hash_file(&self.path)?
+                match hash_file(&self.path) {
+                    Ok(v) => v,
+                    Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                        warn!(
+                            "'hash_file({:?})' failed with 'Permission denied'",
+                            &self.path.to_string_lossy().into_owned()
+                        );
+                        hash_string(&self.name.to_string())
+                    },
+                    Err(e) => return Err(e.into()),
+                }
+
             },
             NodeType::Symlink { target } => {
                 // Note that if the tree was constructed using `follow_symlinks

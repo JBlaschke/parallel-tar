@@ -129,6 +129,14 @@ impl Filesystem for TreeNode {
                 );
                 NodeType::Unknown {}
             },
+            Err(IndexerError::Io(e))
+                if e.kind() == std::io::ErrorKind::TimedOut => {
+                warn!(
+                    "'node_type_from_path({:?})' failed with 'Operation timed out'",
+                    path.to_string_lossy().into_owned()
+                );
+                NodeType::Unknown {}
+            },
             Err(e) => return Err(e)
         };
 
