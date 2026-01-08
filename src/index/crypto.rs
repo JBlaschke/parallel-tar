@@ -104,16 +104,20 @@ impl HashedNodes for TreeNode {
         // recursively.
         let hash = match &self.node_type {
             NodeType::File { .. } => {
+                // Note: hash_file will already be guaranteed to return an
+                // std::io::Error (and not another error type) => we can capture
+                // it using the `Err(e)` pattern, without needing to further
+                // check the type of the error.
                 match hash_file(&self.path) {
                     Ok(v) => v,
-                    Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                    Err(e) => {
                         warn!(
-                            "'hash_file({:?})' failed with 'Permission denied'",
-                            &self.path.to_string_lossy().into_owned()
+                            "'hash_file({:?})' failed with '{}'",
+                            &self.path.to_string_lossy().into_owned(),
+                            e.kind()
                         );
                         hash_string(&self.name.to_string())
-                    },
-                    Err(e) => return Err(e.into()),
+                    }
                 }
 
             },
@@ -159,7 +163,7 @@ impl HashedNodes for TreeNode {
             NodeType::Device {} => {
                 hash_string(&self.name.to_string())
             }
-            NodeType::Unknown {} => {
+            NodeType::Unknown { .. } => {
                 hash_string(&self.name.to_string())
             }
         };

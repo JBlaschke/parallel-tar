@@ -10,14 +10,18 @@ impl Display for TreeNode {
     /// Pretty print the tree with computed sizes
     fn print_tree(self: &Arc<Self>, prefix: &str, is_last: bool) {
         let connector = if is_last { "└── " } else { "├── " };
-        let icon = match & self.node_type {
-            NodeType::File { .. }      => "📄",
-            NodeType::Directory { .. } => "📁",
-            NodeType::Symlink { .. }   => "🔗",
-            NodeType::Socket { .. }    => "🔌",
-            NodeType::Fifo { .. }      => "🚰",
-            NodeType::Device { .. }    => "💾",
-            NodeType::Unknown { .. }   => "❓",
+        let icon: String = match & self.node_type {
+            NodeType::File { .. }        => "📄".to_string(),
+            NodeType::Directory { .. }   => "📁".to_string(),
+            NodeType::Symlink { target } => format!(
+                "🔗  {{{}}}", target.to_string_lossy().clone()
+            ),
+            NodeType::Socket { .. }     => "🔌".to_string(),
+            NodeType::Fifo { .. }       => "🚰".to_string(),
+            NodeType::Device { .. }     => "💾".to_string(),
+            NodeType::Unknown { error } => format!(
+                "❓ {{{}}}", error.to_string()
+            ),
         };
 
         let size = self.read_metadata().unwrap_or_default().size;

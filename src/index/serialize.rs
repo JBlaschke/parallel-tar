@@ -18,7 +18,7 @@ pub enum SerializedNodeType {
     Socket {},
     Fifo {},
     Device {},
-    Unknown {}
+    Unknown { error: String }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -55,7 +55,9 @@ impl Serializeable for TreeNode {
             NodeType::Socket {} => SerializedNodeType::Socket {},
             NodeType::Fifo {} => SerializedNodeType::Fifo {},
             NodeType::Device {} => SerializedNodeType::Device {},
-            NodeType::Unknown {} => SerializedNodeType::Unknown {}
+            NodeType::Unknown { error } => SerializedNodeType::Unknown {
+                error: error.to_string()
+            }
         };
 
         Ok(SerializedTreeNode {
@@ -83,7 +85,7 @@ impl Serializeable for TreeNode {
             SerializedNodeType::Socket {} => NodeType::Socket {},
             SerializedNodeType::Fifo {} => NodeType::Fifo {},
             SerializedNodeType::Device {} => NodeType::Device {},
-            SerializedNodeType::Unknown {} => NodeType::Unknown {}
+            SerializedNodeType::Unknown { error } => NodeType::Unknown { error }
         };
 
         Arc::new(TreeNode {

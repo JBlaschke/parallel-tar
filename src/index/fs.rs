@@ -84,12 +84,12 @@ impl Filesystem for TreeNode {
                 } else if file_type.is_block_device() || file_type.is_char_device() {
                     NodeType::Device {}
                 } else {
-                    NodeType::Unknown {}
+                    NodeType::Unknown { error: "".to_string() }
                 }
             }
             #[cfg(not(unix))]
             {
-                NodeType::Unknown {}
+                NodeType::Unknown { error: "".to_string() }
             }
         };
 
@@ -121,21 +121,13 @@ impl Filesystem for TreeNode {
                 path, follow_symlinks, valid_symlinks_only
             ) {
             Ok(v) => v,
-            Err(IndexerError::Io(e))
-                if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            Err(IndexerError::Io(e)) => {
                 warn!(
-                    "'node_type_from_path({:?})' failed with 'Permission denied'",
-                    path.to_string_lossy().into_owned()
+                    "'node_type_from_path({:?})' failed with '{}'",
+                    path.to_string_lossy().into_owned(),
+                    e.kind()
                 );
-                NodeType::Unknown {}
-            },
-            Err(IndexerError::Io(e))
-                if e.kind() == std::io::ErrorKind::TimedOut => {
-                warn!(
-                    "'node_type_from_path({:?})' failed with 'Operation timed out'",
-                    path.to_string_lossy().into_owned()
-                );
-                NodeType::Unknown {}
+                NodeType::Unknown { error: e.to_string() }
             },
             Err(e) => return Err(e)
         };

@@ -20,7 +20,7 @@ pub enum NodeType {
     Socket {},
     Fifo {},
     Device {},
-    Unknown {}
+    Unknown { error: String }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, Default)]
@@ -104,7 +104,7 @@ impl TreeNode {
             NodeType::Socket {} => NodeMetadata::default(),
             NodeType::Fifo {} => NodeMetadata::default(),
             NodeType::Device {} => NodeMetadata::default(),
-            NodeType::Unknown {} => NodeMetadata::default()
+            NodeType::Unknown { .. } => NodeMetadata::default()
         };
 
         * guard = Some(meta);
