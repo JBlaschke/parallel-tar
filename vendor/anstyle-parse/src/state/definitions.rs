@@ -1,7 +1,10 @@
+#![allow(clippy::exhaustive_enums)]
+
 use core::mem;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(u8)]
+#[derive(Default)]
 pub enum State {
     Anywhere = 0,
     CsiEntry = 1,
@@ -15,17 +18,11 @@ pub enum State {
     DcsPassthrough = 9,
     Escape = 10,
     EscapeIntermediate = 11,
+    #[default]
     Ground = 12,
     OscString = 13,
     SosPmApcString = 14,
     Utf8 = 15,
-}
-
-impl Default for State {
-    #[inline]
-    fn default() -> State {
-        State::Ground
-    }
 }
 
 impl TryFrom<u8> for State {
@@ -58,7 +55,9 @@ const STATES: [State; 16] = [
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
+#[derive(Default)]
 pub enum Action {
+    #[default]
     Nop = 0,
     Clear = 1,
     Collect = 2,
@@ -75,13 +74,6 @@ pub enum Action {
     Put = 13,
     Unhook = 14,
     BeginUtf8 = 15,
-}
-
-impl Default for Action {
-    #[inline]
-    fn default() -> Action {
-        Action::Nop
-    }
 }
 
 impl TryFrom<u8> for Action {
@@ -120,21 +112,21 @@ const ACTIONS: [Action; 16] = [
 ///
 /// Bad things will happen if those invariants are violated.
 #[inline(always)]
-pub const fn unpack(delta: u8) -> (State, Action) {
+pub(crate) const fn unpack(delta: u8) -> (State, Action) {
     unsafe {
         (
             // State is stored in bottom 4 bits
-            mem::transmute(delta & 0x0f),
+            mem::transmute::<u8, State>(delta & 0x0f),
             // Action is stored in top 4 bits
-            mem::transmute(delta >> 4),
+            mem::transmute::<u8, Action>(delta >> 4),
         )
     }
 }
 
 #[inline(always)]
 #[cfg(test)]
-pub const fn pack(state: State, action: Action) -> u8 {
-    (action as u8) << 4 | state as u8
+pub(crate) const fn pack(state: State, action: Action) -> u8 {
+    ((action as u8) << 4) | state as u8
 }
 
 #[cfg(test)]

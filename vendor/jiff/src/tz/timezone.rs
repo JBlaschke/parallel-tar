@@ -9,7 +9,6 @@ use crate::{
     Timestamp, Zoned,
 };
 
-#[cfg(feature = "alloc")]
 use crate::tz::posix::PosixTimeZoneOwned;
 
 use self::repr::Repr;
@@ -710,7 +709,6 @@ impl TimeZone {
     /// as POSIX time zones to POSIX time zones (e.g., fixed offset time
     /// zones). Instead, this only returns something when the actual
     /// representation of the time zone is a POSIX time zone.
-    #[cfg(feature = "alloc")]
     #[inline]
     pub(crate) fn posix_tz(&self) -> Option<&PosixTimeZoneOwned> {
         repr::each! {
@@ -3889,6 +3887,22 @@ mod tests {
                 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 84, 90, 195, 190, 10, 84,
                 90, 77, 49, 84, 90, 105, 102, 49, 44, 74, 51, 44, 50, 10,
             ],
+        );
+    }
+
+    /// A regression test where a TZ lookup for the minimum civil datetime
+    /// resulted in a panic in the TZif handling.
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn regression_tz_lookup_datetime_min() {
+        use alloc::string::ToString;
+
+        let test_file = TzifTestFile::get("America/Boa_Vista");
+        let tz = TimeZone::tzif(test_file.name, test_file.data).unwrap();
+        let err = tz.to_timestamp(DateTime::MIN).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "converting datetime with time zone offset `-04:02:40` to timestamp overflowed: parameter 'unix-seconds' with value -377705102240 is not in the required range of -377705023201..=253402207200",
         );
     }
 }
