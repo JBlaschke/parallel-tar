@@ -37,7 +37,7 @@ fn main() {
             )
             .exit();
         }
-        ver.clone()
+        ver.to_string()
     } else {
         // Increment the one requested (in a real program, we'd reset the lower numbers)
         let (maj, min, pat) = (

@@ -1,8 +1,6 @@
 #[cfg(debug_assertions)]
 use crate::util::AnyValueId;
 
-use crate::builder::ValueRange;
-
 /// Behavior of arguments when they are encountered while parsing
 ///
 /// # Examples
@@ -34,13 +32,9 @@ use crate::builder::ValueRange;
 pub enum ArgAction {
     /// When encountered, store the associated value(s) in [`ArgMatches`][crate::ArgMatches]
     ///
-    /// <div class="warning">
-    ///
     /// **NOTE:** If the argument has previously been seen, it will result in a
     /// [`ArgumentConflict`][crate::error::ErrorKind::ArgumentConflict] unless
     /// [`Command::args_override_self(true)`][crate::Command::args_override_self] is set.
-    ///
-    /// </div>
     ///
     /// # Examples
     ///
@@ -93,13 +87,9 @@ pub enum ArgAction {
     /// No value is allowed. To optionally accept a value, see
     /// [`Arg::default_missing_value`][super::Arg::default_missing_value]
     ///
-    /// <div class="warning">
-    ///
     /// **NOTE:** If the argument has previously been seen, it will result in a
     /// [`ArgumentConflict`][crate::error::ErrorKind::ArgumentConflict] unless
     /// [`Command::args_override_self(true)`][crate::Command::args_override_self] is set.
-    ///
-    /// </div>
     ///
     /// # Examples
     ///
@@ -172,13 +162,9 @@ pub enum ArgAction {
     /// No value is allowed. To optionally accept a value, see
     /// [`Arg::default_missing_value`][super::Arg::default_missing_value]
     ///
-    /// <div class="warning">
-    ///
     /// **NOTE:** If the argument has previously been seen, it will result in a
     /// [`ArgumentConflict`][crate::error::ErrorKind::ArgumentConflict] unless
     /// [`Command::args_override_self(true)`][crate::Command::args_override_self] is set.
-    ///
-    /// </div>
     ///
     /// # Examples
     ///
@@ -208,7 +194,7 @@ pub enum ArgAction {
     /// );
     /// ```
     SetFalse,
-    /// When encountered, increment a `u8` counter starting from `0`.
+    /// When encountered, increment a `u8` counter
     ///
     /// If no [`default_value`][super::Arg::default_value] is set, it will be `0`.
     ///
@@ -341,11 +327,11 @@ pub enum ArgAction {
     ///             .action(clap::ArgAction::Version)
     ///     );
     ///
-    /// // Existing version still exists
+    /// // Existing help still exists
     /// let err = cmd.clone().try_get_matches_from(["mycmd", "--version"]).unwrap_err();
     /// assert_eq!(err.kind(), clap::error::ErrorKind::DisplayVersion);
     ///
-    /// // New version available
+    /// // New help available
     /// let err = cmd.try_get_matches_from(["mycmd", "--special-version"]).unwrap_err();
     /// assert_eq!(err.kind(), clap::error::ErrorKind::DisplayVersion);
     /// ```
@@ -368,35 +354,6 @@ impl ArgAction {
             Self::HelpShort => false,
             Self::HelpLong => false,
             Self::Version => false,
-        }
-    }
-
-    #[cfg(debug_assertions)]
-    pub(crate) fn max_num_args(&self) -> ValueRange {
-        match self {
-            Self::Set => ValueRange::FULL,
-            Self::Append => ValueRange::FULL,
-            Self::SetTrue => ValueRange::OPTIONAL,
-            Self::SetFalse => ValueRange::OPTIONAL,
-            Self::Count => ValueRange::EMPTY,
-            Self::Help => ValueRange::EMPTY,
-            Self::HelpShort => ValueRange::EMPTY,
-            Self::HelpLong => ValueRange::EMPTY,
-            Self::Version => ValueRange::EMPTY,
-        }
-    }
-
-    pub(crate) fn default_num_args(&self) -> ValueRange {
-        match self {
-            Self::Set => ValueRange::SINGLE,
-            Self::Append => ValueRange::SINGLE,
-            Self::SetTrue => ValueRange::EMPTY,
-            Self::SetFalse => ValueRange::EMPTY,
-            Self::Count => ValueRange::EMPTY,
-            Self::Help => ValueRange::EMPTY,
-            Self::HelpShort => ValueRange::EMPTY,
-            Self::HelpLong => ValueRange::EMPTY,
-            Self::Version => ValueRange::EMPTY,
         }
     }
 

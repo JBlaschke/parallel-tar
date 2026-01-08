@@ -10,11 +10,5 @@ fn main() {
         )
         .get_matches();
 
-    let args = matches
-        .get_many::<String>("name")
-        .unwrap_or_default()
-        .map(|v| v.as_str())
-        .collect::<Vec<_>>();
-
-    println!("names: {:?}", &args);
+    println!("name: {:?}", matches.get_one::<String>("name"));
 }

@@ -6,7 +6,7 @@
 // Std
 use std::borrow::Cow;
 use std::cmp;
-use std::collections::BTreeMap;
+use std::usize;
 
 // Internal
 use crate::builder::PossibleValue;
@@ -74,9 +74,7 @@ const DEFAULT_NO_ARGS_TEMPLATE: &str = "\
 {usage-heading} {usage}{after-help}\
     ";
 
-const SHORT_SIZE: usize = 4; // See `fn short` for the 4
-
-/// Help template writer
+/// `clap` HelpTemplate Writer.
 ///
 /// Wraps a writer stream providing different methods to generate help for `clap` objects.
 pub(crate) struct HelpTemplate<'cmd, 'writer> {
@@ -253,7 +251,7 @@ impl<'cmd, 'writer> HelpTemplate<'cmd, 'writer> {
 }
 
 /// Basic template methods
-impl HelpTemplate<'_, '_> {
+impl<'cmd, 'writer> HelpTemplate<'cmd, 'writer> {
     /// Writes binary name of a Parser Object to the wrapped stream.
     fn write_display_name(&mut self) {
         debug!("HelpTemplate::write_display_name");
@@ -367,7 +365,7 @@ impl HelpTemplate<'_, '_> {
 }
 
 /// Arg handling
-impl HelpTemplate<'_, '_> {
+impl<'cmd, 'writer> HelpTemplate<'cmd, 'writer> {
     /// Writes help for all arguments (options, flags, args, subcommands)
     /// including titles of a Parser Object to the wrapped stream.
     pub(crate) fn write_all_args(&mut self) {
@@ -395,11 +393,9 @@ impl HelpTemplate<'_, '_> {
             .filter_map(|arg| arg.get_help_heading())
             .collect::<FlatSet<_>>();
 
-        let flatten = self.cmd.is_flatten_help_set();
-
         let mut first = true;
 
-        if subcmds && !flatten {
+        if subcmds {
             if !first {
                 self.writer.push_str("\n\n");
             }
@@ -409,7 +405,12 @@ impl HelpTemplate<'_, '_> {
                 .cmd
                 .get_subcommand_help_heading()
                 .unwrap_or(&default_help_heading);
-            let _ = write!(self.writer, "{header}{help_heading}:{header:#}\n",);
+            let _ = write!(
+                self.writer,
+                "{}{help_heading}:{}\n",
+                header.render(),
+                header.render_reset()
+            );
 
             self.write_subcommands(self.cmd);
         }
@@ -421,7 +422,12 @@ impl HelpTemplate<'_, '_> {
             first = false;
             // Write positional args if any
             let help_heading = "Arguments";
-            let _ = write!(self.writer, "{header}{help_heading}:{header:#}\n",);
+            let _ = write!(
+                self.writer,
+                "{}{help_heading}:{}\n",
+                header.render(),
+                header.render_reset()
+            );
             self.write_args(&pos, "Arguments", positional_sort_key);
         }
 
@@ -431,7 +437,12 @@ impl HelpTemplate<'_, '_> {
             }
             first = false;
             let help_heading = "Options";
-            let _ = write!(self.writer, "{header}{help_heading}:{header:#}\n",);
+            let _ = write!(
+                self.writer,
+                "{}{help_heading}:{}\n",
+                header.render(),
+                header.render_reset()
+            );
             self.write_args(&non_pos, "Options", option_sort_key);
         }
         if !custom_headings.is_empty() {
@@ -453,15 +464,15 @@ impl HelpTemplate<'_, '_> {
                         self.writer.push_str("\n\n");
                     }
                     first = false;
-                    let _ = write!(self.writer, "{header}{heading}:{header:#}\n",);
+                    let _ = write!(
+                        self.writer,
+                        "{}{heading}:{}\n",
+                        header.render(),
+                        header.render_reset()
+                    );
                     self.write_args(&args, heading, option_sort_key);
                 }
             }
-        }
-        if subcmds && flatten {
-            let mut cmd = self.cmd.clone();
-            cmd.build();
-            self.write_flat_subcommands(&cmd, &mut first);
         }
     }
 
@@ -470,7 +481,7 @@ impl HelpTemplate<'_, '_> {
         debug!("HelpTemplate::write_args {_category}");
         // The shortest an arg can legally be is 2 (i.e. '-x')
         let mut longest = 2;
-        let mut ord_v = BTreeMap::new();
+        let mut ord_v = Vec::new();
 
         // Determine the longest
         for &arg in args.iter().filter(|arg| {
@@ -479,22 +490,19 @@ impl HelpTemplate<'_, '_> {
             // args alignment
             should_show_arg(self.use_long, arg)
         }) {
-            let width = display_width(&arg.to_string());
-            let actual_width = if arg.get_long().is_some() {
-                width + SHORT_SIZE
-            } else {
-                width
-            };
-            longest = longest.max(actual_width);
-            debug!(
-                "HelpTemplate::write_args: arg={:?} longest={}",
-                arg.get_id(),
-                longest
-            );
+            if longest_filter(arg) {
+                longest = longest.max(display_width(&arg.to_string()));
+                debug!(
+                    "HelpTemplate::write_args: arg={:?} longest={}",
+                    arg.get_id(),
+                    longest
+                );
+            }
 
             let key = (sort_key)(arg);
-            ord_v.insert(key, arg);
+            ord_v.push((key, arg));
         }
+        ord_v.sort_by(|a, b| a.0.cmp(&b.0));
 
         let next_line_help = self.will_args_wrap(args, longest);
 
@@ -540,7 +548,12 @@ impl HelpTemplate<'_, '_> {
         let literal = &self.styles.get_literal();
 
         if let Some(s) = arg.get_short() {
-            let _ = write!(self.writer, "{literal}-{s}{literal:#}",);
+            let _ = write!(
+                self.writer,
+                "{}-{s}{}",
+                literal.render(),
+                literal.render_reset()
+            );
         } else if arg.get_long().is_some() {
             self.writer.push_str("    ");
         }
@@ -556,7 +569,12 @@ impl HelpTemplate<'_, '_> {
             if arg.get_short().is_some() {
                 self.writer.push_str(", ");
             }
-            let _ = write!(self.writer, "{literal}--{long}{literal:#}",);
+            let _ = write!(
+                self.writer,
+                "{}--{long}{}",
+                literal.render(),
+                literal.render_reset()
+            );
         }
     }
 
@@ -573,7 +591,7 @@ impl HelpTemplate<'_, '_> {
             debug!("HelpTemplate::align_to_about: printing long help so skip alignment");
             0
         } else if !arg.is_positional() {
-            let self_len = display_width(&arg.to_string()) + SHORT_SIZE;
+            let self_len = display_width(&arg.to_string());
             // Since we're writing spaces from the tab point we first need to know if we
             // had a long and short, or just short
             let padding = if arg.get_long().is_some() {
@@ -626,26 +644,27 @@ impl HelpTemplate<'_, '_> {
 
         let spaces = if next_line_help {
             TAB.len() + NEXT_LINE_INDENT.len()
-        } else {
+        } else if let Some(true) = arg.map(|a| a.is_positional()) {
             longest + TAB_WIDTH * 2
+        } else {
+            longest + TAB_WIDTH * 2 + 4 // See `fn short` for the 4
         };
         let trailing_indent = spaces; // Don't indent any further than the first line is indented
         let trailing_indent = self.get_spaces(trailing_indent);
 
         let mut help = about.clone();
-        let mut help_is_empty = help.is_empty();
         help.replace_newline_var();
-
-        let next_line_specs = self.use_long && arg.is_some();
-        if !spec_vals.is_empty() && !next_line_specs {
-            if !help_is_empty {
-                let sep = " ";
+        if !spec_vals.is_empty() {
+            if !help.is_empty() {
+                let sep = if self.use_long && arg.is_some() {
+                    "\n\n"
+                } else {
+                    " "
+                };
                 help.push_str(sep);
             }
             help.push_str(spec_vals);
-            help_is_empty = help.is_empty();
         }
-
         let avail_chars = self.term_w.saturating_sub(spaces);
         debug!(
             "HelpTemplate::help: help_width={}, spaces={}, avail={}",
@@ -655,72 +674,62 @@ impl HelpTemplate<'_, '_> {
         );
         help.wrap(avail_chars);
         help.indent("", &trailing_indent);
+        let help_is_empty = help.is_empty();
         self.writer.push_styled(&help);
-
-        let mut has_possible_values = false;
         if let Some(arg) = arg {
-            if !arg.is_hide_possible_values_set() && self.use_long_pv(arg) {
-                const DASH_SPACE: usize = "- ".len();
-                let possible_vals = arg.get_possible_values();
-                if !possible_vals.is_empty() {
-                    debug!("HelpTemplate::help: Found possible vals...{possible_vals:?}");
-                    has_possible_values = true;
+            const DASH_SPACE: usize = "- ".len();
+            let possible_vals = arg.get_possible_values();
+            if !possible_vals.is_empty()
+                && !arg.is_hide_possible_values_set()
+                && self.use_long_pv(arg)
+            {
+                debug!("HelpTemplate::help: Found possible vals...{possible_vals:?}");
+                let longest = possible_vals
+                    .iter()
+                    .filter(|f| !f.is_hide_set())
+                    .map(|f| display_width(f.get_name()))
+                    .max()
+                    .expect("Only called with possible value");
 
-                    let longest = possible_vals
-                        .iter()
-                        .filter(|f| !f.is_hide_set())
-                        .map(|f| display_width(f.get_name()))
-                        .max()
-                        .expect("Only called with possible value");
+                let spaces = spaces + TAB_WIDTH - DASH_SPACE;
+                let trailing_indent = spaces + DASH_SPACE;
+                let trailing_indent = self.get_spaces(trailing_indent);
 
-                    let spaces = spaces + TAB_WIDTH - DASH_SPACE;
-                    let trailing_indent = spaces + DASH_SPACE;
-                    let trailing_indent = self.get_spaces(trailing_indent);
+                if !help_is_empty {
+                    let _ = write!(self.writer, "\n\n{:spaces$}", "");
+                }
+                self.writer.push_str("Possible values:");
+                for pv in possible_vals.iter().filter(|pv| !pv.is_hide_set()) {
+                    let name = pv.get_name();
 
-                    if !help_is_empty {
-                        let _ = write!(self.writer, "\n\n{:spaces$}", "");
+                    let mut descr = StyledStr::new();
+                    let _ = write!(
+                        &mut descr,
+                        "{}{name}{}",
+                        literal.render(),
+                        literal.render_reset()
+                    );
+                    if let Some(help) = pv.get_help() {
+                        debug!("HelpTemplate::help: Possible Value help");
+                        // To align help messages
+                        let padding = longest - display_width(name);
+                        let _ = write!(&mut descr, ": {:padding$}", "");
+                        descr.push_styled(help);
                     }
-                    self.writer.push_str("Possible values:");
-                    for pv in possible_vals.iter().filter(|pv| !pv.is_hide_set()) {
-                        let name = pv.get_name();
 
-                        let mut descr = StyledStr::new();
-                        let _ = write!(&mut descr, "{literal}{name}{literal:#}",);
-                        if let Some(help) = pv.get_help() {
-                            debug!("HelpTemplate::help: Possible Value help");
-                            // To align help messages
-                            let padding = longest - display_width(name);
-                            let _ = write!(&mut descr, ": {:padding$}", "");
-                            descr.push_styled(help);
-                        }
+                    let avail_chars = if self.term_w > trailing_indent.len() {
+                        self.term_w - trailing_indent.len()
+                    } else {
+                        usize::MAX
+                    };
+                    descr.replace_newline_var();
+                    descr.wrap(avail_chars);
+                    descr.indent("", &trailing_indent);
 
-                        let avail_chars = if self.term_w > trailing_indent.len() {
-                            self.term_w - trailing_indent.len()
-                        } else {
-                            usize::MAX
-                        };
-                        descr.replace_newline_var();
-                        descr.wrap(avail_chars);
-                        descr.indent("", &trailing_indent);
-
-                        let _ = write!(self.writer, "\n{:spaces$}- ", "",);
-                        self.writer.push_styled(&descr);
-                    }
+                    let _ = write!(self.writer, "\n{:spaces$}- ", "",);
+                    self.writer.push_styled(&descr);
                 }
             }
-        }
-
-        if !spec_vals.is_empty() && next_line_specs {
-            let mut help = StyledStr::new();
-            if !help_is_empty || has_possible_values {
-                let sep = "\n\n";
-                help.push_str(sep);
-            }
-            help.push_str(spec_vals);
-
-            help.wrap(avail_chars);
-            help.indent("", &trailing_indent);
-            self.writer.push_styled(&help);
         }
     }
 
@@ -740,12 +749,13 @@ impl HelpTemplate<'_, '_> {
             true
         } else {
             // force_next_line
-            let h = arg
-                .get_help()
-                .or_else(|| arg.get_long_help())
-                .unwrap_or_default();
+            let h = arg.get_help().unwrap_or_default();
             let h_w = h.display_width() + display_width(spec_vals);
-            let taken = longest + TAB_WIDTH * 2;
+            let taken = if arg.is_positional() {
+                longest + TAB_WIDTH * 2
+            } else {
+                longest + TAB_WIDTH * 2 + 4 // See `fn short` for the 4
+            };
             self.term_w >= taken
                 && (taken as f32 / self.term_w as f32) > 0.40
                 && h_w > (self.term_w - taken)
@@ -754,10 +764,6 @@ impl HelpTemplate<'_, '_> {
 
     fn spec_vals(&self, a: &Arg) -> String {
         debug!("HelpTemplate::spec_vals: a={a}");
-        let ctx = &self.styles.get_context();
-        let ctx_val = &self.styles.get_context_value();
-        let val_sep = format!("{ctx}, {ctx:#}"); // context values styled separator
-
         let mut spec_vals = Vec::new();
         #[cfg(feature = "env")]
         if let Some(ref env) = a.env {
@@ -777,11 +783,7 @@ impl HelpTemplate<'_, '_> {
                 } else {
                     Default::default()
                 };
-                let env_info = format!(
-                    "{ctx}[env: {ctx:#}{ctx_val}{}{}{ctx_val:#}{ctx}]{ctx:#}",
-                    env.0.to_string_lossy(),
-                    env_val
-                );
+                let env_info = format!("[env: {}{}]", env.0.to_string_lossy(), env_val);
                 spec_vals.push(env_info);
             }
         }
@@ -791,65 +793,61 @@ impl HelpTemplate<'_, '_> {
                 a.default_vals
             );
 
-            let dvs = a
+            let pvs = a
                 .default_vals
                 .iter()
-                .map(|dv| dv.to_string_lossy())
-                .map(|dv| {
-                    if dv.contains(char::is_whitespace) {
-                        Cow::from(format!("{dv:?}"))
+                .map(|pvs| pvs.to_string_lossy())
+                .map(|pvs| {
+                    if pvs.contains(char::is_whitespace) {
+                        Cow::from(format!("{pvs:?}"))
                     } else {
-                        dv
+                        pvs
                     }
                 })
                 .collect::<Vec<_>>()
                 .join(" ");
 
-            spec_vals.push(format!(
-                "{ctx}[default: {ctx:#}{ctx_val}{dvs}{ctx_val:#}{ctx}]{ctx:#}"
-            ));
+            spec_vals.push(format!("[default: {pvs}]"));
         }
 
-        let mut als = Vec::new();
-
-        let short_als = a
-            .short_aliases
-            .iter()
-            .filter(|&als| als.1) // visible
-            .map(|als| format!("{ctx_val}-{}{ctx_val:#}", als.0)); // name
-        debug!(
-            "HelpTemplate::spec_vals: Found short aliases...{:?}",
-            a.short_aliases
-        );
-        als.extend(short_als);
-
-        let long_als = a
+        let als = a
             .aliases
             .iter()
             .filter(|&als| als.1) // visible
-            .map(|als| format!("{ctx_val}--{}{ctx_val:#}", als.0)); // name
-        debug!("HelpTemplate::spec_vals: Found aliases...{:?}", a.aliases);
-        als.extend(long_als);
-
+            .map(|als| als.0.as_str()) // name
+            .collect::<Vec<_>>()
+            .join(", ");
         if !als.is_empty() {
-            let als = als.join(&val_sep);
-            spec_vals.push(format!("{ctx}[aliases: {ctx:#}{als}{ctx}]{ctx:#}"));
+            debug!("HelpTemplate::spec_vals: Found aliases...{:?}", a.aliases);
+            spec_vals.push(format!("[aliases: {als}]"));
         }
 
-        if !a.is_hide_possible_values_set() && !self.use_long_pv(a) {
-            let possible_vals = a.get_possible_values();
-            if !possible_vals.is_empty() {
-                debug!("HelpTemplate::spec_vals: Found possible vals...{possible_vals:?}");
+        let als = a
+            .short_aliases
+            .iter()
+            .filter(|&als| als.1) // visible
+            .map(|&als| als.0.to_string()) // name
+            .collect::<Vec<_>>()
+            .join(", ");
+        if !als.is_empty() {
+            debug!(
+                "HelpTemplate::spec_vals: Found short aliases...{:?}",
+                a.short_aliases
+            );
+            spec_vals.push(format!("[short aliases: {als}]"));
+        }
 
-                let pvs = possible_vals
-                    .iter()
-                    .filter_map(PossibleValue::get_visible_quoted_name)
-                    .map(|pv| format!("{ctx_val}{pv}{ctx_val:#}"))
-                    .collect::<Vec<_>>()
-                    .join(&val_sep);
+        let possible_vals = a.get_possible_values();
+        if !possible_vals.is_empty() && !a.is_hide_possible_values_set() && !self.use_long_pv(a) {
+            debug!("HelpTemplate::spec_vals: Found possible vals...{possible_vals:?}");
 
-                spec_vals.push(format!("{ctx}[possible values: {ctx:#}{pvs}{ctx}]{ctx:#}"));
-            }
+            let pvs = possible_vals
+                .iter()
+                .filter_map(PossibleValue::get_visible_quoted_name)
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            spec_vals.push(format!("[possible values: {pvs}]"));
         }
         let connector = if self.use_long { "\n" } else { " " };
         spec_vals.join(connector)
@@ -874,68 +872,7 @@ impl HelpTemplate<'_, '_> {
 }
 
 /// Subcommand handling
-impl HelpTemplate<'_, '_> {
-    /// Writes help for subcommands of a Parser Object to the wrapped stream.
-    fn write_flat_subcommands(&mut self, cmd: &Command, first: &mut bool) {
-        debug!(
-            "HelpTemplate::write_flat_subcommands, cmd={}, first={}",
-            cmd.get_name(),
-            *first
-        );
-        use std::fmt::Write as _;
-        let header = &self.styles.get_header();
-
-        let mut ord_v = BTreeMap::new();
-        for subcommand in cmd
-            .get_subcommands()
-            .filter(|subcommand| should_show_subcommand(subcommand))
-        {
-            ord_v.insert(
-                (subcommand.get_display_order(), subcommand.get_name()),
-                subcommand,
-            );
-        }
-        for (_, subcommand) in ord_v {
-            if !*first {
-                self.writer.push_str("\n\n");
-            }
-            *first = false;
-
-            let heading = subcommand.get_usage_name_fallback();
-            let about = subcommand
-                .get_about()
-                .or_else(|| subcommand.get_long_about())
-                .unwrap_or_default();
-
-            let _ = write!(self.writer, "{header}{heading}:{header:#}",);
-            if !about.is_empty() {
-                let _ = write!(self.writer, "\n{about}",);
-            }
-
-            let args = subcommand
-                .get_arguments()
-                .filter(|arg| should_show_arg(self.use_long, arg) && !arg.is_global_set())
-                .collect::<Vec<_>>();
-            if !args.is_empty() {
-                self.writer.push_str("\n");
-            }
-
-            let mut sub_help = HelpTemplate {
-                writer: self.writer,
-                cmd: subcommand,
-                styles: self.styles,
-                usage: self.usage,
-                next_line_help: self.next_line_help,
-                term_w: self.term_w,
-                use_long: self.use_long,
-            };
-            sub_help.write_args(&args, heading, option_sort_key);
-            if subcommand.is_flatten_help_set() {
-                sub_help.write_flat_subcommands(subcommand, first);
-            }
-        }
-    }
-
+impl<'cmd, 'writer> HelpTemplate<'cmd, 'writer> {
     /// Writes help for subcommands of a Parser Object to the wrapped stream.
     fn write_subcommands(&mut self, cmd: &Command) {
         debug!("HelpTemplate::write_subcommands");
@@ -944,33 +881,49 @@ impl HelpTemplate<'_, '_> {
 
         // The shortest an arg can legally be is 2 (i.e. '-x')
         let mut longest = 2;
-        let mut ord_v = BTreeMap::new();
+        let mut ord_v = Vec::new();
         for subcommand in cmd
             .get_subcommands()
             .filter(|subcommand| should_show_subcommand(subcommand))
         {
             let mut styled = StyledStr::new();
             let name = subcommand.get_name();
-            let _ = write!(styled, "{literal}{name}{literal:#}",);
+            let _ = write!(
+                styled,
+                "{}{name}{}",
+                literal.render(),
+                literal.render_reset()
+            );
             if let Some(short) = subcommand.get_short_flag() {
-                let _ = write!(styled, ", {literal}-{short}{literal:#}",);
+                let _ = write!(
+                    styled,
+                    ", {}-{short}{}",
+                    literal.render(),
+                    literal.render_reset()
+                );
             }
             if let Some(long) = subcommand.get_long_flag() {
-                let _ = write!(styled, ", {literal}--{long}{literal:#}",);
+                let _ = write!(
+                    styled,
+                    ", {}--{long}{}",
+                    literal.render(),
+                    literal.render_reset()
+                );
             }
             longest = longest.max(styled.display_width());
-            ord_v.insert((subcommand.get_display_order(), styled), subcommand);
+            ord_v.push((subcommand.get_display_order(), styled, subcommand));
         }
+        ord_v.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
 
         debug!("HelpTemplate::write_subcommands longest = {longest}");
 
         let next_line_help = self.will_subcommands_wrap(cmd.get_subcommands(), longest);
 
-        for (i, (sc_str, sc)) in ord_v.into_iter().enumerate() {
+        for (i, (_, sc_str, sc)) in ord_v.into_iter().enumerate() {
             if 0 < i {
                 self.writer.push_str("\n");
             }
-            self.write_subcommand(sc_str.1, sc, next_line_help, longest);
+            self.write_subcommand(sc_str, sc, next_line_help, longest);
         }
     }
 
@@ -1006,29 +959,20 @@ impl HelpTemplate<'_, '_> {
             .unwrap_or_default();
 
         self.subcmd(sc_str, next_line_help, longest);
-        self.help(None, about, spec_vals, next_line_help, longest);
+        self.help(None, about, spec_vals, next_line_help, longest)
     }
 
     fn sc_spec_vals(&self, a: &Command) -> String {
         debug!("HelpTemplate::sc_spec_vals: a={}", a.get_name());
-        let ctx = &self.styles.get_context();
-        let ctx_val = &self.styles.get_context_value();
-        let val_sep = format!("{ctx}, {ctx:#}"); // context values styled separator
         let mut spec_vals = vec![];
 
         let mut short_als = a
             .get_visible_short_flag_aliases()
-            .map(|s| format!("{ctx_val}-{s}{ctx_val:#}"))
+            .map(|a| format!("-{a}"))
             .collect::<Vec<_>>();
-        let long_als = a
-            .get_visible_long_flag_aliases()
-            .map(|s| format!("{ctx_val}--{s}{ctx_val:#}"));
-        short_als.extend(long_als);
-        let als = a
-            .get_visible_aliases()
-            .map(|s| format!("{ctx_val}{s}{ctx_val:#}"));
+        let als = a.get_visible_aliases().map(|s| s.to_string());
         short_als.extend(als);
-        let all_als = short_als.join(&val_sep);
+        let all_als = short_als.join(", ");
         if !all_als.is_empty() {
             debug!(
                 "HelpTemplate::spec_vals: Found aliases...{:?}",
@@ -1038,11 +982,7 @@ impl HelpTemplate<'_, '_> {
                 "HelpTemplate::spec_vals: Found short flag aliases...{:?}",
                 a.get_all_short_flag_aliases().collect::<Vec<_>>()
             );
-            debug!(
-                "HelpTemplate::spec_vals: Found long flag aliases...{:?}",
-                a.get_all_long_flag_aliases().collect::<Vec<_>>()
-            );
-            spec_vals.push(format!("{ctx}[aliases: {ctx:#}{all_als}{ctx}]{ctx:#}"));
+            spec_vals.push(format!("[aliases: {all_als}]"));
         }
 
         spec_vals.join(" ")
@@ -1055,10 +995,7 @@ impl HelpTemplate<'_, '_> {
             true
         } else {
             // force_next_line
-            let h = cmd
-                .get_about()
-                .or_else(|| cmd.get_long_about())
-                .unwrap_or_default();
+            let h = cmd.get_about().unwrap_or_default();
             let h_w = h.display_width() + display_width(spec_vals);
             let taken = longest + TAB_WIDTH * 2;
             self.term_w >= taken
@@ -1143,6 +1080,10 @@ fn should_show_arg(use_long: bool, arg: &Arg) -> bool {
 
 fn should_show_subcommand(subcommand: &Command) -> bool {
     !subcommand.is_hide_set()
+}
+
+fn longest_filter(arg: &Arg) -> bool {
+    arg.is_takes_value_set() || arg.get_long().is_some() || arg.get_short().is_none()
 }
 
 #[cfg(test)]

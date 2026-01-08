@@ -10,15 +10,21 @@ Options:
   -V, --version      Print version
 
 $ 03_02_option_mult
-names: []
+name: None
 
 $ 03_02_option_mult --name bob
-names: ["bob"]
+name: Some("bob")
 
-$ 03_02_option_mult --name bob --name john
-names: ["bob", "john"]
+$ 03_02_option_mult --name=bob
+name: Some("bob")
 
-$ 03_02_option_mult_derive --name bob --name=john -n tom -n=chris -nsteve
-name: ["bob", "john", "tom", "chris", "steve"]
+$ 03_02_option_mult -n bob
+name: Some("bob")
+
+$ 03_02_option_mult -n=bob
+name: Some("bob")
+
+$ 03_02_option_mult -nbob
+name: Some("bob")
 
 ```

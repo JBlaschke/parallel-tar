@@ -1,5 +1,3 @@
-#![allow(unexpected_cfgs)] // `foo` doesn't exist
-
 cfg_if::cfg_if! {
     if #[cfg(foo)] {
         fn works() -> bool { false }

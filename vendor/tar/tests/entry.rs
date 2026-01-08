@@ -1,8 +1,7 @@
 extern crate tar;
 extern crate tempfile;
 
-use std::fs::create_dir;
-use std::fs::File;
+use std::fs::{create_dir, File};
 use std::io::Read;
 
 use tempfile::Builder;

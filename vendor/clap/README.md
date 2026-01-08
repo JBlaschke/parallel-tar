@@ -12,12 +12,6 @@
 
 Dual-licensed under [Apache 2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT).
 
-## Get Started
-
-```console
-$ cargo add clap
-```
-
 ## About
 
 Create your command-line parser, with all of the bells and whistles, declaratively or procedurally.

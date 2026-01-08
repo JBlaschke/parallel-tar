@@ -696,10 +696,8 @@ impl core::fmt::Display for CrateFeatureError {
             TzdbZoneInfo => "tzdb-zoneinfo",
         };
         #[allow(unreachable_code)]
-        {
-            core::fmt::Display::fmt(name, f)?;
-            f.write_str("` is not enabled")
-        }
+        core::fmt::Display::fmt(name, f)?;
+        f.write_str("` is not enabled")
     }
 }
 
@@ -725,11 +723,11 @@ impl core::fmt::Display for IOError {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         #[cfg(feature = "std")]
         {
-            self.err.fmt(f)
+            write!(f, "{}", self.err)
         }
         #[cfg(not(feature = "std"))]
         {
-            f.write_str("<BUG: SHOULD NOT EXIST>")
+            write!(f, "<BUG: SHOULD NOT EXIST>")
         }
     }
 }
@@ -742,7 +740,7 @@ impl core::fmt::Debug for IOError {
         }
         #[cfg(not(feature = "std"))]
         {
-            f.write_str("<BUG: SHOULD NOT EXIST>")
+            write!(f, "<BUG: SHOULD NOT EXIST>")
         }
     }
 }
@@ -767,11 +765,11 @@ impl core::fmt::Display for FilePathError {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         #[cfg(feature = "std")]
         {
-            self.path.display().fmt(f)
+            write!(f, "{}", self.path.display())
         }
         #[cfg(not(feature = "std"))]
         {
-            f.write_str("<BUG: SHOULD NOT EXIST>")
+            write!(f, "<BUG: SHOULD NOT EXIST>")
         }
     }
 }
@@ -784,7 +782,7 @@ impl core::fmt::Debug for FilePathError {
         }
         #[cfg(not(feature = "std"))]
         {
-            f.write_str("<BUG: SHOULD NOT EXIST>")
+            write!(f, "<BUG: SHOULD NOT EXIST>")
         }
     }
 }

@@ -224,8 +224,7 @@ spaces. The exceptions are the locale (`%c`, `%r`, `%X`, `%x`), and time zone
 Moreover, any number of decimal digits can be inserted after the (possibly
 absent) flag and before the directive, so long as the parsed number is less
 than 256. The number formed by these digits will correspond to the minimum
-amount of padding (to the left). Note that padding is clamped to a maximum of
-`20`.
+amount of padding (to the left).
 
 The flags and padding amount above may be used when parsing as well. Most
 settings are ignored during parsing except for padding. For example, if one
@@ -278,7 +277,6 @@ use crate::{
     civil::{Date, DateTime, ISOWeekDate, Time, Weekday},
     error::{fmt::strtime::Error as E, ErrorContext},
     fmt::{
-        buffer::{ArrayBuffer, BorrowedWriter},
         strtime::{format::Formatter, parse::Parser},
         Write,
     },
@@ -1155,12 +1153,9 @@ impl BrokenDownTime {
         wtr: &mut W,
     ) -> Result<(), Error> {
         let fmt = format.as_ref();
-        let mut buf = ArrayBuffer::<100>::default();
-        let mut bbuf = buf.as_borrowed();
-        let mut wtr = BorrowedWriter::new(&mut bbuf, wtr);
-        let mut formatter = Formatter { config, fmt, tm: self, wtr: &mut wtr };
+        let mut formatter = Formatter { config, fmt, tm: self, wtr };
         formatter.format().context(E::FailedStrftime)?;
-        wtr.finish()
+        Ok(())
     }
 
     /// Format this broken down time using the format string given into a new
@@ -2285,7 +2280,12 @@ impl BrokenDownTime {
 
     #[inline]
     fn hour_ranged(&self) -> Option<t::Hour> {
-        self.hour
+        let hour = self.hour?;
+        Some(match self.meridiem() {
+            None => hour,
+            Some(Meridiem::AM) => hour % C(12),
+            Some(Meridiem::PM) => (hour % C(12)) + C(12),
+        })
     }
 
     /// Returns the parsed minute, if available.
@@ -2849,20 +2849,11 @@ impl BrokenDownTime {
     /// ```
     #[inline]
     pub fn set_hour(&mut self, hour: Option<i8>) -> Result<(), Error> {
-        self.set_hour_ranged(match hour {
+        self.hour = match hour {
             None => None,
             Some(hour) => Some(t::Hour::try_new("hour", hour)?),
-        });
+        };
         Ok(())
-    }
-
-    #[inline]
-    fn set_hour_ranged(&mut self, hour: Option<t::Hour>) {
-        if let Some(meridiem) = self.meridiem {
-            self.hour = hour.map(|hour| meridiem.adjust_hour(hour));
-        } else {
-            self.hour = hour;
-        }
     }
 
     /// Set the minute on this broken down time.
@@ -3188,9 +3179,6 @@ impl BrokenDownTime {
     /// ```
     #[inline]
     pub fn set_meridiem(&mut self, meridiem: Option<Meridiem>) {
-        if let Some(meridiem) = meridiem {
-            self.hour = self.hour.map(|hour| meridiem.adjust_hour(hour));
-        }
         self.meridiem = meridiem;
     }
 
@@ -3415,16 +3403,6 @@ pub enum Meridiem {
     PM,
 }
 
-impl Meridiem {
-    /// Adjusts 12-hour to 24-hour based on meridiem.
-    fn adjust_hour(self, hour: t::Hour) -> t::Hour {
-        match self {
-            Meridiem::AM => hour % C(12),
-            Meridiem::PM => (hour % C(12)) + C(12),
-        }
-    }
-}
-
 impl From<Time> for Meridiem {
     fn from(t: Time) -> Meridiem {
         if t.hour() < 12 {
@@ -3537,7 +3515,6 @@ enum Flag {
 }
 
 /// Returns the "full" weekday name.
-#[cfg_attr(feature = "perf-inline", inline(always))]
 fn weekday_name_full(wd: Weekday) -> &'static str {
     match wd {
         Weekday::Sunday => "Sunday",
@@ -3551,7 +3528,6 @@ fn weekday_name_full(wd: Weekday) -> &'static str {
 }
 
 /// Returns an abbreviated weekday name.
-#[cfg_attr(feature = "perf-inline", inline(always))]
 fn weekday_name_abbrev(wd: Weekday) -> &'static str {
     match wd {
         Weekday::Sunday => "Sun",
@@ -3565,7 +3541,6 @@ fn weekday_name_abbrev(wd: Weekday) -> &'static str {
 }
 
 /// Returns the "full" month name.
-#[cfg_attr(feature = "perf-inline", inline(always))]
 fn month_name_full(month: t::Month) -> &'static str {
     match month.get() {
         1 => "January",
@@ -3585,7 +3560,6 @@ fn month_name_full(month: t::Month) -> &'static str {
 }
 
 /// Returns the abbreviated month name.
-#[cfg_attr(feature = "perf-inline", inline(always))]
 fn month_name_abbrev(month: t::Month) -> &'static str {
     match month.get() {
         1 => "Jan",

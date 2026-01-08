@@ -29,14 +29,12 @@ mod zoneinfo;
 /// assert!(tz::db().get("does-not-exist").is_err());
 /// ```
 pub fn db() -> &'static TimeZoneDatabase {
-    // #[cfg(any(not(feature = "std"), miri))]
-    #[cfg(not(feature = "std"))]
+    #[cfg(any(not(feature = "std"), miri))]
     {
         static NONE: TimeZoneDatabase = TimeZoneDatabase::none();
         &NONE
     }
-    // #[cfg(all(feature = "std", not(miri)))]
-    #[cfg(feature = "std")]
+    #[cfg(all(feature = "std", not(miri)))]
     {
         use std::sync::OnceLock;
 
@@ -256,28 +254,25 @@ impl TimeZoneDatabase {
         // platforms? Probably not to be honest. But these should only be
         // executed ~once generally, so it doesn't seem like a big deal to try.
         // And trying makes things a little more flexible I think.
-        #[cfg(not(miri))]
-        {
-            if cfg!(target_os = "android") {
-                let db = concatenated::Database::from_env();
-                if !db.is_definitively_empty() {
-                    return TimeZoneDatabase::new(Kind::Concatenated(db));
-                }
+        if cfg!(target_os = "android") {
+            let db = concatenated::Database::from_env();
+            if !db.is_definitively_empty() {
+                return TimeZoneDatabase::new(Kind::Concatenated(db));
+            }
 
-                let db = zoneinfo::Database::from_env();
-                if !db.is_definitively_empty() {
-                    return TimeZoneDatabase::new(Kind::ZoneInfo(db));
-                }
-            } else {
-                let db = zoneinfo::Database::from_env();
-                if !db.is_definitively_empty() {
-                    return TimeZoneDatabase::new(Kind::ZoneInfo(db));
-                }
+            let db = zoneinfo::Database::from_env();
+            if !db.is_definitively_empty() {
+                return TimeZoneDatabase::new(Kind::ZoneInfo(db));
+            }
+        } else {
+            let db = zoneinfo::Database::from_env();
+            if !db.is_definitively_empty() {
+                return TimeZoneDatabase::new(Kind::ZoneInfo(db));
+            }
 
-                let db = concatenated::Database::from_env();
-                if !db.is_definitively_empty() {
-                    return TimeZoneDatabase::new(Kind::Concatenated(db));
-                }
+            let db = concatenated::Database::from_env();
+            if !db.is_definitively_empty() {
+                return TimeZoneDatabase::new(Kind::Concatenated(db));
             }
         }
 

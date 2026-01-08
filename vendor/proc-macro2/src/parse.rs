@@ -3,9 +3,6 @@ use crate::fallback::{
     TokenStreamBuilder,
 };
 use crate::{Delimiter, Punct, Spacing, TokenTree};
-use alloc::borrow::ToOwned as _;
-use alloc::string::ToString as _;
-use alloc::vec::Vec;
 use core::char;
 use core::str::{Bytes, CharIndices, Chars};
 

@@ -12,7 +12,7 @@ Options:
 
 TESTS:
       --empty        File is empty and is either a regular file or a directory
-      --name <name>  Base of file name (the path with the leading directories removed) matches shell
+      --name <NAME>  Base of file name (the path with the leading directories removed) matches shell
                      pattern pattern
 
 OPERATORS:
@@ -37,40 +37,6 @@ $ find --empty -o --name .keep
         "name",
         String(
             ".keep",
-        ),
-    ),
-]
-
-$ find --empty -o --name .keep -o --name foo
-[
-    (
-        "empty",
-        Bool(
-            true,
-        ),
-    ),
-    (
-        "or",
-        Bool(
-            true,
-        ),
-    ),
-    (
-        "name",
-        String(
-            ".keep",
-        ),
-    ),
-    (
-        "or",
-        Bool(
-            true,
-        ),
-    ),
-    (
-        "name",
-        String(
-            "foo",
         ),
     ),
 ]

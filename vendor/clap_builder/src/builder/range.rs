@@ -18,17 +18,6 @@ impl ValueRange {
         end_inclusive: 1,
     };
 
-    #[cfg(debug_assertions)]
-    pub(crate) const OPTIONAL: Self = Self {
-        start_inclusive: 0,
-        end_inclusive: 1,
-    };
-
-    pub(crate) const FULL: Self = Self {
-        start_inclusive: 0,
-        end_inclusive: usize::MAX,
-    };
-
     /// Create a range
     ///
     /// # Panics
@@ -146,7 +135,9 @@ impl From<std::ops::Range<usize>> for ValueRange {
 
 impl From<std::ops::RangeFull> for ValueRange {
     fn from(_: std::ops::RangeFull) -> Self {
-        Self::FULL
+        let start_inclusive = 0;
+        let end_inclusive = usize::MAX;
+        Self::raw(start_inclusive, end_inclusive)
     }
 }
 
@@ -183,12 +174,9 @@ impl From<std::ops::RangeToInclusive<usize>> for ValueRange {
 }
 
 impl std::fmt::Display for ValueRange {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         ok!(self.start_inclusive.fmt(f));
-        if self.is_fixed() {
-        } else if self.end_inclusive == usize::MAX {
-            ok!("..".fmt(f));
-        } else {
+        if !self.is_fixed() {
             ok!("..=".fmt(f));
             ok!(self.end_inclusive.fmt(f));
         }
@@ -197,7 +185,7 @@ impl std::fmt::Display for ValueRange {
 }
 
 impl std::fmt::Debug for ValueRange {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "{self}")
     }
 }

@@ -83,8 +83,8 @@
 //! types make use of thread-local memory, meaning they cannot be accessed from
 //! a different thread.
 
-#![no_std]
-#![doc(html_root_url = "https://docs.rs/proc-macro2/1.0.105")]
+// Proc-macro2 types in rustdoc of other crates get linked to here.
+#![doc(html_root_url = "https://docs.rs/proc-macro2/1.0.104")]
 #![cfg_attr(any(proc_macro_span, super_unstable), feature(proc_macro_span))]
 #![cfg_attr(super_unstable, feature(proc_macro_def_site))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
@@ -136,7 +136,6 @@ compile_error! {"\
 "}
 
 extern crate alloc;
-extern crate std;
 
 #[cfg(feature = "proc-macro")]
 extern crate proc_macro;
@@ -175,13 +174,7 @@ use crate::extra::DelimSpan;
 use crate::marker::{ProcMacroAutoTraits, MARKER};
 #[cfg(procmacro2_semver_exempt)]
 use crate::rustc_literal_escaper::MixedUnit;
-#[cfg(procmacro2_semver_exempt)]
-use alloc::borrow::ToOwned as _;
-use alloc::string::{String, ToString as _};
-#[cfg(procmacro2_semver_exempt)]
-use alloc::vec::Vec;
 use core::cmp::Ordering;
-use core::ffi::CStr;
 use core::fmt::{self, Debug, Display};
 use core::hash::{Hash, Hasher};
 #[cfg(span_locations)]
@@ -189,6 +182,7 @@ use core::ops::Range;
 use core::ops::RangeBounds;
 use core::str::FromStr;
 use std::error::Error;
+use std::ffi::CStr;
 #[cfg(span_locations)]
 use std::path::PathBuf;
 

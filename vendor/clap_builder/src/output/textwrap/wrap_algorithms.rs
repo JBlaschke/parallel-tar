@@ -4,7 +4,7 @@ use super::core::display_width;
 pub(crate) struct LineWrapper<'w> {
     hard_width: usize,
     line_width: usize,
-    indentation: Option<&'w str>,
+    carryover: Option<&'w str>,
 }
 
 impl<'w> LineWrapper<'w> {
@@ -12,24 +12,22 @@ impl<'w> LineWrapper<'w> {
         Self {
             hard_width,
             line_width: 0,
-            indentation: None,
+            carryover: None,
         }
     }
 
     pub(crate) fn reset(&mut self) {
         self.line_width = 0;
-        self.indentation = None;
+        self.carryover = None;
     }
 
     pub(crate) fn wrap(&mut self, mut words: Vec<&'w str>) -> Vec<&'w str> {
-        let mut first_word = false;
-        if self.indentation.is_none() {
-            first_word = true;
+        if self.carryover.is_none() {
             if let Some(word) = words.first() {
                 if word.trim().is_empty() {
-                    self.indentation = Some(*word);
+                    self.carryover = Some(*word);
                 } else {
-                    self.indentation = Some("");
+                    self.carryover = Some("");
                 }
             }
         }
@@ -40,22 +38,19 @@ impl<'w> LineWrapper<'w> {
             let trimmed = word.trim_end();
             let word_width = display_width(trimmed);
             let trimmed_delta = word.len() - trimmed.len();
-            if first_word && 0 < word_width {
-                // Never try to wrap the first word
-                first_word = false;
-            } else if self.hard_width < self.line_width + word_width {
+            if i != 0 && self.hard_width < self.line_width + word_width {
                 if 0 < i {
-                    let prev = i - 1;
-                    let trimmed = words[prev].trim_end();
-                    words[prev] = trimmed;
+                    let last = i - 1;
+                    let trimmed = words[last].trim_end();
+                    words[last] = trimmed;
                 }
 
                 self.line_width = 0;
                 words.insert(i, "\n");
                 i += 1;
-                if let Some(indentation) = self.indentation {
-                    words.insert(i, indentation);
-                    self.line_width += indentation.len();
+                if let Some(carryover) = self.carryover {
+                    words.insert(i, carryover);
+                    self.line_width += carryover.len();
                     i += 1;
                 }
             }

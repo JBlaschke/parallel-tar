@@ -2453,9 +2453,19 @@ impl Span {
             self.largest_unit() <= Unit::Week,
             "units must be weeks or lower"
         );
-        // OK because we have a compile time assert above that ensures our
-        // nanoseconds are in the valid range of a `SignedDuration`.
-        SignedDuration::from_nanos_i128(nanos.get())
+
+        let seconds = nanos / t::NANOS_PER_SECOND;
+        let seconds = i64::from(seconds);
+        let subsec_nanos = nanos % t::NANOS_PER_SECOND;
+        // OK because % 1_000_000_000 above guarantees that the result fits
+        // in a i32.
+        let subsec_nanos = i32::try_from(subsec_nanos).unwrap();
+
+        // SignedDuration::new can panic if |subsec_nanos| >= 1_000_000_000
+        // and seconds == {i64::MIN,i64::MAX}. But this can never happen
+        // because we guaranteed by construction above that |subsec_nanos| <
+        // 1_000_000_000.
+        SignedDuration::new(seconds, subsec_nanos)
     }
 }
 
@@ -2681,56 +2691,6 @@ impl Span {
     #[inline]
     pub(crate) fn get_nanoseconds_ranged(&self) -> t::SpanNanoseconds {
         self.nanoseconds * self.sign
-    }
-
-    #[inline]
-    pub(crate) fn get_years_unsigned(&self) -> t::SpanYears {
-        self.years
-    }
-
-    #[inline]
-    pub(crate) fn get_months_unsigned(&self) -> t::SpanMonths {
-        self.months
-    }
-
-    #[inline]
-    pub(crate) fn get_weeks_unsigned(&self) -> t::SpanWeeks {
-        self.weeks
-    }
-
-    #[inline]
-    pub(crate) fn get_days_unsigned(&self) -> t::SpanDays {
-        self.days
-    }
-
-    #[inline]
-    pub(crate) fn get_hours_unsigned(&self) -> t::SpanHours {
-        self.hours
-    }
-
-    #[inline]
-    pub(crate) fn get_minutes_unsigned(&self) -> t::SpanMinutes {
-        self.minutes
-    }
-
-    #[inline]
-    pub(crate) fn get_seconds_unsigned(&self) -> t::SpanSeconds {
-        self.seconds
-    }
-
-    #[inline]
-    pub(crate) fn get_milliseconds_unsigned(&self) -> t::SpanMilliseconds {
-        self.milliseconds
-    }
-
-    #[inline]
-    pub(crate) fn get_microseconds_unsigned(&self) -> t::SpanMicroseconds {
-        self.microseconds
-    }
-
-    #[inline]
-    pub(crate) fn get_nanoseconds_unsigned(&self) -> t::SpanNanoseconds {
-        self.nanoseconds
     }
 
     #[inline]
@@ -5878,7 +5838,7 @@ pub(crate) struct UnitSet(u16);
 impl UnitSet {
     /// Return a bit set representing all units as zero.
     #[inline]
-    const fn empty() -> UnitSet {
+    fn empty() -> UnitSet {
         UnitSet(0)
     }
 
@@ -5887,7 +5847,7 @@ impl UnitSet {
     /// When `is_zero` is false, the unit is added to this set. Otherwise,
     /// the unit is removed from this set.
     #[inline]
-    const fn set(self, unit: Unit, is_zero: bool) -> UnitSet {
+    fn set(self, unit: Unit, is_zero: bool) -> UnitSet {
         let bit = 1 << unit as usize;
         if is_zero {
             UnitSet(self.0 & !bit)
@@ -5896,29 +5856,10 @@ impl UnitSet {
         }
     }
 
-    /// Returns the set constructed from the given slice of units.
-    #[inline]
-    pub(crate) const fn from_slice(units: &[Unit]) -> UnitSet {
-        let mut set = UnitSet::empty();
-        let mut i = 0;
-        while i < units.len() {
-            set = set.set(units[i], false);
-            i += 1;
-        }
-        set
-    }
-
     /// Returns true if and only if no units are in this set.
     #[inline]
     pub(crate) fn is_empty(&self) -> bool {
         self.0 == 0
-    }
-
-    /// Returns true when this `Span` contains a non-zero value for the given
-    /// unit.
-    #[inline]
-    pub(crate) fn contains(self, unit: Unit) -> bool {
-        (self.0 & (1 << unit as usize)) != 0
     }
 
     /// Returns true if and only if this `Span` contains precisely one
@@ -5938,12 +5879,6 @@ impl UnitSet {
     #[inline]
     pub(crate) fn only_time(self) -> UnitSet {
         UnitSet(self.0 & 0b0000_0000_0011_1111)
-    }
-
-    /// Returns the intersection of this set and the one given.
-    #[inline]
-    pub(crate) fn intersection(self, other: UnitSet) -> UnitSet {
-        UnitSet(self.0 & other.0)
     }
 
     /// Returns the largest unit in this set, or `None` if none are present.
@@ -6578,7 +6513,8 @@ impl Nudge {
         let mut rounded_time_nanos =
             mode.round_by_unit_in_nanoseconds(time_nanos, smallest, increment);
         let (relative0, relative1) = clamp_relative_span(
-            &Relative::Zoned(relative_start.borrowed()),
+            // FIXME: Find a way to drop this clone.
+            &Relative::Zoned(relative_start.clone()),
             balanced.without_lower(Unit::Day),
             Unit::Day,
             sign.rinto(),

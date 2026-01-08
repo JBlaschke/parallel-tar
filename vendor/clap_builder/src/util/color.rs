@@ -2,15 +2,15 @@ use crate::builder::PossibleValue;
 use crate::derive::ValueEnum;
 
 /// Represents the color preferences for program output
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Default)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum ColorChoice {
     /// Enables colored output only when the output is going to a terminal or TTY.
     ///
-    /// <div class="warning">
-    ///
     /// **NOTE:** This is the default behavior of `clap`.
     ///
-    /// </div>
+    /// # Platform Specific
+    ///
+    /// This setting only applies to Unix, Linux, and macOS (i.e. non-Windows platforms).
     ///
     /// # Examples
     ///
@@ -23,10 +23,13 @@ pub enum ColorChoice {
     ///     .get_matches();
     /// # }
     /// ```
-    #[default]
     Auto,
 
     /// Enables colored output regardless of whether or not the output is going to a terminal/TTY.
+    ///
+    /// # Platform Specific
+    ///
+    /// This setting only applies to Unix, Linux, and macOS (i.e. non-Windows platforms).
     ///
     /// # Examples
     ///
@@ -42,6 +45,10 @@ pub enum ColorChoice {
     Always,
 
     /// Disables colored output no matter if the output is going to a terminal/TTY, or not.
+    ///
+    /// # Platform Specific
+    ///
+    /// This setting only applies to Unix, Linux, and macOS (i.e. non-Windows platforms)
     ///
     /// # Examples
     ///
@@ -63,6 +70,12 @@ impl ColorChoice {
         Self::value_variants()
             .iter()
             .filter_map(ValueEnum::to_possible_value)
+    }
+}
+
+impl Default for ColorChoice {
+    fn default() -> Self {
+        Self::Auto
     }
 }
 

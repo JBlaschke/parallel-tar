@@ -1,40 +1,5 @@
 # CHANGELOG
 
-0.2.18 (2026-01-05)
-===================
-This release ships a sizeable refactor to the RFC 2822, RFC 9110, RC
-3339, RFC 9557, ISO 8601 and friendly format printers. Specifically,
-they are now all monomorphic internally (instead of being generic over
-`jiff::fmt::Write`) and write to uninitialized buffers. This improves
-runtime performance (sometimes dramatically so), and to a more modest
-degree, decreases binary size and improves compile times.
-
-This release also includes a bug fix where `DateTime::MIN.to_zoned(..)`
-could panic.
-
-Enhancements:
-
-* [#460](https://github.com/BurntSushi/jiff/pull/460):
-Improve runtime performance and binary size of RFC 2822 printer.
-* [#461](https://github.com/BurntSushi/jiff/pull/461):
-Tweak behavior of printing min/max offsets in RFC 2822 and Temporal printers.
-* [#462](https://github.com/BurntSushi/jiff/pull/462):
-Export fallible constructors for `jiff::SignedDuration`.
-* [#465](https://github.com/BurntSushi/jiff/pull/465):
-Improve runtime performance and binary size of the "friendly" duration printer.
-* [#468](https://github.com/BurntSushi/jiff/pull/468):
-Improve runtime performance and binary size of the Temporal ISO 8601 duration
-printer.
-* [#470](https://github.com/BurntSushi/jiff/pull/470):
-Improve runtime performance and binary size of the Temporal ISO 8601 datetime
-printer.
-* [#474](https://github.com/BurntSushi/jiff/pull/474):
-Improve runtime performance and binary size of Jiff's `strftime`
-implementation.
-* [#477](https://github.com/BurntSushi/jiff/pull/477):
-Fix a bug where time zone lookups for `civil::DateTime::MIN` could panic.
-
-
 0.2.17 (2025-12-24)
 ===================
 This release contains binary size improvements to Jiff, more succinct error

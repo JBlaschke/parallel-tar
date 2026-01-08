@@ -1,14 +1,7 @@
-#[cfg(feature = "string")]
-use std::borrow::Cow;
-
 /// A UTF-8-encoded fixed string
-///
-/// <div class="warning">
 ///
 /// **NOTE:** To support dynamic values (i.e. `String`), enable the `string`
 /// feature
-///
-/// </div>
 #[derive(Default, Clone, Eq, PartialEq, PartialOrd, Ord, Hash)]
 pub struct Str {
     name: Inner,
@@ -16,7 +9,7 @@ pub struct Str {
 
 impl Str {
     #[cfg(feature = "string")]
-    pub(crate) fn from_string(name: String) -> Self {
+    pub(crate) fn from_string(name: std::string::String) -> Self {
         Self {
             name: Inner::from_string(name),
         }
@@ -52,15 +45,15 @@ impl From<&'_ Str> for Str {
 }
 
 #[cfg(feature = "string")]
-impl From<String> for Str {
-    fn from(name: String) -> Self {
+impl From<std::string::String> for Str {
+    fn from(name: std::string::String) -> Self {
         Self::from_string(name)
     }
 }
 
 #[cfg(feature = "string")]
-impl From<&'_ String> for Str {
-    fn from(name: &'_ String) -> Self {
+impl From<&'_ std::string::String> for Str {
+    fn from(name: &'_ std::string::String) -> Self {
         Self::from_ref(name.as_str())
     }
 }
@@ -74,16 +67,6 @@ impl From<&'static str> for Str {
 impl From<&'_ &'static str> for Str {
     fn from(name: &'_ &'static str) -> Self {
         Self::from_static_ref(name)
-    }
-}
-
-#[cfg(feature = "string")]
-impl From<Cow<'static, str>> for Str {
-    fn from(cow: Cow<'static, str>) -> Self {
-        match cow {
-            Cow::Borrowed(s) => Self::from(s),
-            Cow::Owned(s) => Self::from(s),
-        }
     }
 }
 
@@ -221,13 +204,13 @@ impl PartialEq<Str> for &'_ std::ffi::OsStr {
     }
 }
 
-impl PartialEq<String> for Str {
+impl PartialEq<std::string::String> for Str {
     #[inline]
-    fn eq(&self, other: &String) -> bool {
+    fn eq(&self, other: &std::string::String) -> bool {
         PartialEq::eq(self.as_str(), other.as_str())
     }
 }
-impl PartialEq<Str> for String {
+impl PartialEq<Str> for std::string::String {
     #[inline]
     fn eq(&self, other: &Str) -> bool {
         PartialEq::eq(self.as_str(), other.as_str())
@@ -243,7 +226,7 @@ pub(crate) mod inner {
     }
 
     impl Inner {
-        pub(crate) fn from_string(name: String) -> Self {
+        pub(crate) fn from_string(name: std::string::String) -> Self {
             Self::Owned(name.into_boxed_str())
         }
 
@@ -307,7 +290,7 @@ impl PartialEq for Inner {
 
 impl PartialOrd for Inner {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
+        self.as_str().partial_cmp(other.as_str())
     }
 }
 
@@ -323,27 +306,5 @@ impl std::hash::Hash for Inner {
     #[inline]
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.as_str().hash(state);
-    }
-}
-
-#[cfg(test)]
-#[cfg(feature = "string")]
-mod tests {
-    use super::*;
-
-    #[test]
-    #[cfg(feature = "string")]
-    fn from_cow_borrowed() {
-        let cow = Cow::Borrowed("hello");
-        let str = Str::from(cow);
-        assert_eq!(str, Str::from("hello"));
-    }
-
-    #[test]
-    #[cfg(feature = "string")]
-    fn from_cow_owned() {
-        let cow = Cow::Owned("world".to_string());
-        let str = Str::from(cow);
-        assert_eq!(str, Str::from("world"));
     }
 }

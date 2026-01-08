@@ -1,7 +1,7 @@
 use clap::Parser;
 
 #[derive(Parser)]
-#[command(version, about, long_about = None)] // Read from `Cargo.toml`
+#[command(author, version, about, long_about = None)] // Read from `Cargo.toml`
 struct Cli {
     #[arg(long)]
     two: String,

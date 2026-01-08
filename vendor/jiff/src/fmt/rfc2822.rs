@@ -44,7 +44,7 @@ general interchange format for new applications.
 use crate::{
     civil::{Date, DateTime, Time, Weekday},
     error::{fmt::rfc2822::Error as E, ErrorContext},
-    fmt::{buffer::BorrowedBuffer, Parsed, Write},
+    fmt::{util::IntegerFormatter, Parsed, Write, WriteExt},
     tz::{Offset, TimeZone},
     util::{
         parse,
@@ -61,17 +61,6 @@ pub(crate) static DEFAULT_DATETIME_PARSER: DateTimeParser =
 /// The default date time printer that we use throughout Jiff.
 pub(crate) static DEFAULT_DATETIME_PRINTER: DateTimePrinter =
     DateTimePrinter::new();
-
-/// The maximum number bytes that can be written by the RFC 2822 printer.
-///
-/// We reserve a heap or stack buffer up front before printing, and we want to
-/// ensure we have enough space to write the longest possible RFC 2822 string.
-const PRINTER_MAX_BYTES_RFC2822: usize = 31;
-
-/// Same idea, but for RFC 9110.
-///
-/// The difference comes from always using `GMT` instead of, e.g., `-0400`.
-const PRINTER_MAX_BYTES_RFC9110: usize = 29;
 
 /// Convert a [`Zoned`] to an [RFC 2822] datetime string.
 ///
@@ -1060,11 +1049,7 @@ impl DateTimePrinter {
         &self,
         zdt: &Zoned,
     ) -> Result<alloc::string::String, Error> {
-        // Writing directly into the unused capacity of a `String` saves about
-        // 40% on a micro-benchmark compared to just passing a `&mut String`
-        // to `print_zoned`.
-        let mut buf =
-            alloc::string::String::with_capacity(PRINTER_MAX_BYTES_RFC2822);
+        let mut buf = alloc::string::String::with_capacity(4);
         self.print_zoned(zdt, &mut buf)?;
         Ok(buf)
     }
@@ -1106,8 +1091,7 @@ impl DateTimePrinter {
         &self,
         timestamp: &Timestamp,
     ) -> Result<alloc::string::String, Error> {
-        let mut buf =
-            alloc::string::String::with_capacity(PRINTER_MAX_BYTES_RFC2822);
+        let mut buf = alloc::string::String::with_capacity(4);
         self.print_timestamp(timestamp, &mut buf)?;
         Ok(buf)
     }
@@ -1153,8 +1137,7 @@ impl DateTimePrinter {
         &self,
         timestamp: &Timestamp,
     ) -> Result<alloc::string::String, Error> {
-        let mut buf =
-            alloc::string::String::with_capacity(PRINTER_MAX_BYTES_RFC9110);
+        let mut buf = alloc::string::String::with_capacity(29);
         self.print_timestamp_rfc9110(timestamp, &mut buf)?;
         Ok(buf)
     }
@@ -1211,19 +1194,9 @@ impl DateTimePrinter {
     pub fn print_zoned<W: Write>(
         &self,
         zdt: &Zoned,
-        mut wtr: W,
+        wtr: W,
     ) -> Result<(), Error> {
-        BorrowedBuffer::with_writer::<PRINTER_MAX_BYTES_RFC2822>(
-            &mut wtr,
-            PRINTER_MAX_BYTES_RFC2822,
-            |bbuf| {
-                self.print_civil_with_offset(
-                    zdt.datetime(),
-                    Some(zdt.offset()),
-                    bbuf,
-                )
-            },
-        )
+        self.print_civil_with_offset(zdt.datetime(), Some(zdt.offset()), wtr)
     }
 
     /// Print a `Timestamp` datetime to the given writer.
@@ -1262,14 +1235,10 @@ impl DateTimePrinter {
     pub fn print_timestamp<W: Write>(
         &self,
         timestamp: &Timestamp,
-        mut wtr: W,
+        wtr: W,
     ) -> Result<(), Error> {
         let dt = TimeZone::UTC.to_datetime(*timestamp);
-        BorrowedBuffer::with_writer::<PRINTER_MAX_BYTES_RFC2822>(
-            &mut wtr,
-            PRINTER_MAX_BYTES_RFC2822,
-            |bbuf| self.print_civil_with_offset(dt, None, bbuf),
-        )
+        self.print_civil_with_offset(dt, None, wtr)
     }
 
     /// Print a `Timestamp` datetime to the given writer in a way that is
@@ -1312,23 +1281,22 @@ impl DateTimePrinter {
     pub fn print_timestamp_rfc9110<W: Write>(
         &self,
         timestamp: &Timestamp,
-        mut wtr: W,
+        wtr: W,
     ) -> Result<(), Error> {
-        let dt = TimeZone::UTC.to_datetime(*timestamp);
-        BorrowedBuffer::with_writer::<PRINTER_MAX_BYTES_RFC9110>(
-            &mut wtr,
-            PRINTER_MAX_BYTES_RFC9110,
-            |bbuf| self.print_civil_always_utc(dt, bbuf),
-        )
+        self.print_civil_always_utc(timestamp, wtr)
     }
 
-    #[inline(never)]
-    fn print_civil_with_offset(
+    fn print_civil_with_offset<W: Write>(
         &self,
         dt: DateTime,
         offset: Option<Offset>,
-        buf: &mut BorrowedBuffer<'_>,
+        mut wtr: W,
     ) -> Result<(), Error> {
+        static FMT_DAY: IntegerFormatter = IntegerFormatter::new();
+        static FMT_YEAR: IntegerFormatter = IntegerFormatter::new().padding(4);
+        static FMT_TIME_UNIT: IntegerFormatter =
+            IntegerFormatter::new().padding(2);
+
         if dt.year() < 0 {
             // RFC 2822 actually says the year must be at least 1900, but
             // other implementations (like Chrono) allow any positive 4-digit
@@ -1336,39 +1304,57 @@ impl DateTimePrinter {
             return Err(Error::from(E::NegativeYear));
         }
 
-        buf.write_str(weekday_abbrev(dt.weekday()));
-        buf.write_str(", ");
-        buf.write_int(dt.day().unsigned_abs());
-        buf.write_ascii_char(b' ');
-        buf.write_str(month_name(dt.month()));
-        buf.write_ascii_char(b' ');
-        buf.write_int_pad4(dt.year().unsigned_abs());
-        buf.write_ascii_char(b' ');
-        buf.write_int_pad2(dt.hour().unsigned_abs());
-        buf.write_ascii_char(b':');
-        buf.write_int_pad2(dt.minute().unsigned_abs());
-        buf.write_ascii_char(b':');
-        buf.write_int_pad2(dt.second().unsigned_abs());
-        buf.write_ascii_char(b' ');
+        wtr.write_str(weekday_abbrev(dt.weekday()))?;
+        wtr.write_str(", ")?;
+        wtr.write_int(&FMT_DAY, dt.day())?;
+        wtr.write_str(" ")?;
+        wtr.write_str(month_name(dt.month()))?;
+        wtr.write_str(" ")?;
+        wtr.write_int(&FMT_YEAR, dt.year())?;
+        wtr.write_str(" ")?;
+        wtr.write_int(&FMT_TIME_UNIT, dt.hour())?;
+        wtr.write_str(":")?;
+        wtr.write_int(&FMT_TIME_UNIT, dt.minute())?;
+        wtr.write_str(":")?;
+        wtr.write_int(&FMT_TIME_UNIT, dt.second())?;
+        wtr.write_str(" ")?;
 
         let Some(offset) = offset else {
-            buf.write_str("-0000");
+            wtr.write_str("-0000")?;
             return Ok(());
         };
-        buf.write_ascii_char(if offset.is_negative() { b'-' } else { b'+' });
-        let (offset_hours, offset_minutes) = offset.round_to_nearest_minute();
-        buf.write_int_pad2(offset_hours);
-        buf.write_int_pad2(offset_minutes);
-
+        wtr.write_str(if offset.is_negative() { "-" } else { "+" })?;
+        let mut hours = offset.part_hours_ranged().abs().get();
+        let mut minutes = offset.part_minutes_ranged().abs().get();
+        // RFC 2822, like RFC 3339, requires that time zone offsets are an
+        // integral number of minutes. While rounding based on seconds doesn't
+        // seem clearly indicated, we choose to do that here. An alternative
+        // would be to return an error. It isn't clear how important this is in
+        // practice though.
+        if offset.part_seconds_ranged().abs() >= C(30) {
+            if minutes == 59 {
+                hours = hours.saturating_add(1);
+                minutes = 0;
+            } else {
+                minutes = minutes.saturating_add(1);
+            }
+        }
+        wtr.write_int(&FMT_TIME_UNIT, hours)?;
+        wtr.write_int(&FMT_TIME_UNIT, minutes)?;
         Ok(())
     }
 
-    #[inline(never)]
-    fn print_civil_always_utc(
+    fn print_civil_always_utc<W: Write>(
         &self,
-        dt: DateTime,
-        buf: &mut BorrowedBuffer<'_>,
+        timestamp: &Timestamp,
+        mut wtr: W,
     ) -> Result<(), Error> {
+        static FMT_DAY: IntegerFormatter = IntegerFormatter::new().padding(2);
+        static FMT_YEAR: IntegerFormatter = IntegerFormatter::new().padding(4);
+        static FMT_TIME_UNIT: IntegerFormatter =
+            IntegerFormatter::new().padding(2);
+
+        let dt = TimeZone::UTC.to_datetime(*timestamp);
         if dt.year() < 0 {
             // RFC 2822 actually says the year must be at least 1900, but
             // other implementations (like Chrono) allow any positive 4-digit
@@ -1376,21 +1362,21 @@ impl DateTimePrinter {
             return Err(Error::from(E::NegativeYear));
         }
 
-        buf.write_str(weekday_abbrev(dt.weekday()));
-        buf.write_str(", ");
-        buf.write_int_pad2(dt.day().unsigned_abs());
-        buf.write_str(" ");
-        buf.write_str(month_name(dt.month()));
-        buf.write_str(" ");
-        buf.write_int_pad4(dt.year().unsigned_abs());
-        buf.write_str(" ");
-        buf.write_int_pad2(dt.hour().unsigned_abs());
-        buf.write_str(":");
-        buf.write_int_pad2(dt.minute().unsigned_abs());
-        buf.write_str(":");
-        buf.write_int_pad2(dt.second().unsigned_abs());
-        buf.write_str(" ");
-        buf.write_str("GMT");
+        wtr.write_str(weekday_abbrev(dt.weekday()))?;
+        wtr.write_str(", ")?;
+        wtr.write_int(&FMT_DAY, dt.day())?;
+        wtr.write_str(" ")?;
+        wtr.write_str(month_name(dt.month()))?;
+        wtr.write_str(" ")?;
+        wtr.write_int(&FMT_YEAR, dt.year())?;
+        wtr.write_str(" ")?;
+        wtr.write_int(&FMT_TIME_UNIT, dt.hour())?;
+        wtr.write_str(":")?;
+        wtr.write_int(&FMT_TIME_UNIT, dt.minute())?;
+        wtr.write_str(":")?;
+        wtr.write_int(&FMT_TIME_UNIT, dt.second())?;
+        wtr.write_str(" ")?;
+        wtr.write_str("GMT")?;
         Ok(())
     }
 }
@@ -1859,52 +1845,6 @@ mod tests {
         // This is because in the case of Timestamp, the "true"
         // offset is not known.
         insta::assert_snapshot!(p(ts), @"Tue, 5 Mar 2024 05:34:45 -0000");
-    }
-
-    #[test]
-    fn ok_minimum_offset_roundtrip() {
-        let zdt = date(2025, 12, 25)
-            .at(17, 0, 0, 0)
-            .to_zoned(TimeZone::fixed(Offset::MIN))
-            .unwrap();
-        let string = DateTimePrinter::new().zoned_to_string(&zdt).unwrap();
-        assert_eq!(string, "Thu, 25 Dec 2025 17:00:00 -2559");
-
-        let got: Zoned = DateTimeParser::new().parse_zoned(&string).unwrap();
-        // Since we started with a zoned datetime with a minimal offset
-        // (to second precision) and RFC 2822 only supports minute precision
-        // in time zone offsets, printing the zoned datetime rounds the offset.
-        // But this would normally result in an offset beyond Jiff's limits,
-        // so in this case, the offset truncates to the minimum supported
-        // value by both Jiff and RFC 2822. That's what we test for here.
-        let expected = date(2025, 12, 25)
-            .at(17, 0, 0, 0)
-            .to_zoned(TimeZone::fixed(-Offset::hms(25, 59, 0)))
-            .unwrap();
-        assert_eq!(expected, got);
-    }
-
-    #[test]
-    fn ok_maximum_offset_roundtrip() {
-        let zdt = date(2025, 12, 25)
-            .at(17, 0, 0, 0)
-            .to_zoned(TimeZone::fixed(Offset::MAX))
-            .unwrap();
-        let string = DateTimePrinter::new().zoned_to_string(&zdt).unwrap();
-        assert_eq!(string, "Thu, 25 Dec 2025 17:00:00 +2559");
-
-        let got: Zoned = DateTimeParser::new().parse_zoned(&string).unwrap();
-        // Since we started with a zoned datetime with a maximal offset
-        // (to second precision) and RFC 2822 only supports minute precision
-        // in time zone offsets, printing the zoned datetime rounds the offset.
-        // But this would normally result in an offset beyond Jiff's limits,
-        // so in this case, the offset truncates to the maximum supported
-        // value by both Jiff and RFC 2822. That's what we test for here.
-        let expected = date(2025, 12, 25)
-            .at(17, 0, 0, 0)
-            .to_zoned(TimeZone::fixed(Offset::hms(25, 59, 0)))
-            .unwrap();
-        assert_eq!(expected, got);
     }
 
     #[test]
