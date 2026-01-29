@@ -6,6 +6,11 @@ use std::error::Error;
 use ptar_lib::archive::tar::{create, extract};
 
 fn main() -> Result<(), Box<dyn Error>> {
+    // By default emit warnings
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("warn")
+    ).init();
+
     let args = Command::new("Parallel Tar")
         .version("2.0")
         .author("Johannes Blaschke")

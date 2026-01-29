@@ -10,7 +10,7 @@ use std::fs::{File, read_link};
 use std::thread;
 use std::thread::JoinHandle;
 // Logging
-use log::{warn, info};
+use log::{warn, info, debug};
 
 fn create_worker_thread(
             output_tar_path: &str,
@@ -147,6 +147,8 @@ pub fn create(
     for i in work_items {
         if ! successfully_processed.iter().any(|e| *e == i) {
             warn!("Work item {} requested but not processed!", i);
+        } else {
+            debug!("Work item {} requested and processed", i);
         }
     }
 
