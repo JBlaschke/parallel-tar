@@ -110,7 +110,7 @@ pub fn set_mode_from_path_or_default(header: &mut Header, path: &String) {
                 "'{}' platform has no Unix file mode bits; using defaults: {}",
                 path, mode_to_string(default_mode)
             );
-            mode
+            default_mode
         }
     };
     header.set_mode(mode);
