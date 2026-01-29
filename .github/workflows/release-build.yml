@@ -1,0 +1,158 @@
+name: Build & attach Rust binaries to release
+
+on:
+  push:
+    # Adjust if your release tags use a different scheme
+    tags:
+      - "v*"
+
+# Needed so the workflow can upload files to the Release
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux
+          - runs_on: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            archive_ext: tar.gz
+          - runs_on: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            archive_ext: tar.gz
+
+          # Windows
+          - runs_on: windows-2022
+            target: x86_64-pc-windows-msvc
+            archive_ext: zip
+          - runs_on: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            archive_ext: zip
+
+          # macOS
+          - runs_on: macos-15-intel
+            target: x86_64-apple-darwin
+            archive_ext: tar.gz
+          - runs_on: macos-15
+            target: aarch64-apple-darwin
+            archive_ext: tar.gz
+
+    runs-on: ${{ matrix.runs_on }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.target }}
+
+      - name: Build (release)
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package archive
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          TAG: ${{ github.ref_name }}
+          ARCHIVE_EXT: ${{ matrix.archive_ext }}
+          # Optional: set a repo variable named BIN_NAME if your binary name
+          # doesn't match the default Cargo metadata bin target name.
+          BIN_NAME: ${{ vars.BIN_NAME }}
+        run: |
+          set -euo pipefail
+
+          python - <<'PY'
+          import json, os, pathlib, shutil, subprocess, tarfile, zipfile
+
+          target = os.environ["TARGET"]
+          tag = os.environ["TAG"]
+          archive_ext = os.environ["ARCHIVE_EXT"]
+          bin_name = (os.environ.get("BIN_NAME") or "").strip()
+
+          if not bin_name:
+            meta = json.loads(subprocess.check_output(["cargo", "metadata", "--no-deps", "--format-version", "1"]))
+            root_manifest = pathlib.Path("Cargo.toml").resolve()
+            root_pkg = next((p for p in meta["packages"]
+                            if pathlib.Path(p["manifest_path"]).resolve() == root_manifest), None)
+
+            if root_pkg is None:
+              default_members = meta.get("workspace_default_members") or meta.get("workspace_members")
+              root_id = default_members[0]
+              root_pkg = next(p for p in meta["packages"] if p["id"] == root_id)
+
+            bin_targets = [t for t in root_pkg.get("targets", []) if "bin" in t.get("kind", [])]
+            bin_name = (bin_targets[0]["name"] if bin_targets else root_pkg["name"])
+
+          exe = ".exe" if target.endswith("windows-msvc") else ""
+          binary = pathlib.Path("target") / target / "release" / f"{bin_name}{exe}"
+          if not binary.exists():
+            raise SystemExit(f"Built binary not found: {binary}")
+
+          out_name = f"{bin_name}-{tag}-{target}"
+          dist = pathlib.Path("dist") / out_name
+          if dist.exists():
+            shutil.rmtree(dist)
+          dist.mkdir(parents=True)
+
+          shutil.copy2(binary, dist / f"{bin_name}{exe}")
+
+          for fn in ("README.md", "README.txt", "LICENSE", "LICENSE.md", "COPYING"):
+            p = pathlib.Path(fn)
+            if p.exists():
+              shutil.copy2(p, dist / p.name)
+
+          archive = pathlib.Path(f"{out_name}.{archive_ext}")
+          if archive_ext == "zip":
+            with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as z:
+              for file in dist.rglob("*"):
+                if file.is_file():
+                  z.write(file, arcname=f"{out_name}/{file.relative_to(dist).as_posix()}")
+          elif archive_ext == "tar.gz":
+            with tarfile.open(archive, "w:gz") as t:
+              t.add(dist, arcname=out_name)
+          else:
+            raise SystemExit(f"Unsupported archive_ext={archive_ext}")
+
+          print(f"Created {archive}")
+          PY
+
+      - name: Upload artifact (for release job)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            *.tar.gz
+            *.zip
+          if-no-files-found: error
+
+  release:
+    name: Attach binaries to GitHub Release
+    needs: build
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Upload assets to GitHub Release
+        # Pinning a specific version is recommended for stability.
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/**/*.tar.gz
+            artifacts/**/*.zip
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+
