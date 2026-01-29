@@ -1,26 +1,7 @@
-// Tar files
-use tar::{Builder, Header, EntryType, Archive};
-
 // Clap
 use clap::{Arg, Command};
-
-// ----
-use std::sync::{Arc, Mutex};
-use std::sync::mpsc::{Sender, Receiver, channel};
-use std::thread::JoinHandle;
-use std::{thread, time::Duration};
-
-// File system
-use std::fs::{File, symlink_metadata, read_link};
-use std::path::Path;
 // Stdlib
 use std::error::Error;
-
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt; // Import for Unix-specific permissions
-// ----
-
-use ptar_lib::archive::fs::{find_files, set_mode_from_path_or_default};
 
 use ptar_lib::archive::tar::{create, extract};
 

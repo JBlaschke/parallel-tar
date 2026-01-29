@@ -91,7 +91,9 @@ pub fn create(
 
     // Spawn worker threads
     info!("Starting {} worker threads", num_threads);
-    let mut handles: Vec<JoinHandle<()>> = Vec::new();
+    let mut handles: Vec<
+            JoinHandle<Result<(), ArchiverError<String>>>
+       > = Vec::with_capacity(*num_threads as usize);
     for idx in 0..*num_threads {
         // Per-thread (local) copies of the work and results pipes => avoid
         // moving their originals out of this scope by the `move` closure in
@@ -102,8 +104,9 @@ pub fn create(
         let name = format!("{}.{}.tar", archive_name, idx);
         info!("Starting worker thread: {} and writing to '{}'", idx, name);
         handles.push(
-            thread::spawn(move || {
-                create_worker_thread(name.as_str(), &loc_work, &loc_results);
+            thread::spawn(move || -> Result<(), ArchiverError<String>> {
+                create_worker_thread(name.as_str(), &loc_work, &loc_results)?;
+                Ok(())
             })
         );
     }
@@ -119,18 +122,19 @@ pub fn create(
 
     info!("Collecting worker status (workers are working) ...");
     let processed_items = pipe_results.collect_expected(work_items.len());
-    pipe_work.set_completed();
+    pipe_work.set_completed()?;
 
     info!(" ... waiting for workers to finish ...");
     for h in handles {
         h.join().unwrap_or_else( |err| {
-            warn!("Failed thread join: '{:?}'", err)
-        });
+            warn!("Failed thread join: '{:?}'", err);
+            Ok(())
+        })?;
     }
     info!(" ... workers are done ...");
     // drop(tx_work);
     drop(pipe_work.tx);
-    pipe_results.set_completed();
+    pipe_results.set_completed()?;
 
     info!("... checking worker status.");
     let mut successfully_processed: Vec<String> = vec![];

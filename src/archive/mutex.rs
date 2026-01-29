@@ -67,7 +67,7 @@ fn take_mutex_try_many<T: Clone>(
                 return Ok(input);
             }
             Err(error) => {
-                if (ct > max_try) || get_mutex(&completed)? {
+                if (ct > max_try) || get_mutex::<bool, T>(&completed)? {
                     return Err(error.into());
                 }
                 ct += 1;

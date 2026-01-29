@@ -78,15 +78,56 @@ impl<T: Clone> From<SendError<T>> for ArchiverError<T> {
     }
 }
 
-type Msg<T> = Result<T, ArchiverError<T>>;
+type RTAET<T> = Result<T, ArchiverError<T>>;
 
-impl<T: Clone> From<SendError<Msg<T>>> for ArchiverError<T> {
-    fn from(SendError(msg): SendError<Msg<T>>) -> Self {
+impl<T: Clone> From<SendError<RTAET<T>>> for ArchiverError<T> {
+    fn from(SendError(msg): SendError<RTAET<T>>) -> Self {
         match msg {
             // recover the original ArchiverError<T>
             Err(inner) => inner,
             // receiver dropped while sending an Ok(_)
             Ok(_) => ArchiverError::ChannelClosed, 
+        }
+    }
+}
+
+// fn peel<S, T>(err: S<RTAET<T>>) -> S<T> {
+//     let result = err.into_inner();
+//     match result {
+//         Ok(value) => S(value),
+//         Err(e) => S(e.into_inner())
+//     }
+// }
+
+// impl<T: Clone> ArchiverError<T> {
+//     pub fn into_inner(self) -> Option<T> {
+//         match self {
+//             ArchiverError::SendError(err) => Some(err.into_inner()),
+//             ArchiverError::TryRecvError(_) => None, // no T to extract
+//             ArchiverError::RecvTimeoutError(_) => None,
+//             ArchiverError::Io(_) => None,
+//             ArchiverError::WalkdirError(_) => None,
+//             ArchiverError::LockPoisoned => None,
+//             ArchiverError::ChannelClosed => None,
+//         }
+//     }
+// }
+
+impl<T: Clone> From<ArchiverError<RTAET<T>>> for ArchiverError<T> {
+    fn from(item: ArchiverError<RTAET<T>>) -> Self {
+        match item {
+            ArchiverError::Io(e) => Self::Io(e),
+            ArchiverError::WalkdirError(e) => Self::WalkdirError(e),
+            ArchiverError::TryRecvError(e) => Self::TryRecvError(e),
+            ArchiverError::RecvTimeoutError(e) => Self::RecvTimeoutError(e),
+            ArchiverError::SendError(e) => {
+                match e.into_inner() {
+                    Ok(value) => ArchiverError::SendError(SendError(value)),
+                    Err(inner_error) => inner_error
+                }
+            }
+            ArchiverError::LockPoisoned => Self::LockPoisoned,
+            ArchiverError::ChannelClosed => Self::ChannelClosed
         }
     }
 }
