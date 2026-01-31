@@ -11,7 +11,7 @@ use std::fs::{File, read_link};
 use std::thread;
 use std::thread::JoinHandle;
 // Logging
-use log::{warn, info, debug};
+use log::{error, warn, info, debug};
 // Working with cwd
 use std::env::{current_dir, set_current_dir};
 use std::path::PathBuf;
@@ -21,7 +21,7 @@ fn create_worker_thread(
             pipe_work: &Pipe<String>,
             pipe_results: &Pipe<Result<String, ArchiverError<String>>>,
         ) -> Result<(), ArchiverError<String>> {
-    let output_file = File::create(output_tar_path).unwrap();
+    let output_file = File::create(output_tar_path)?;
     let mut archive = Builder::new(output_file);
 
     loop {
@@ -134,8 +134,16 @@ pub fn create(
         );
         handles.push(
             thread::spawn(move || -> Result<(), ArchiverError<String>> {
-                create_worker_thread(&out, &loc_work, &loc_results)?;
-                Ok(())
+                match create_worker_thread(&out, &loc_work, &loc_results) {
+                    Err(e) => {
+                        error!("Err {}", e);
+                        // No more work due to error => terminate pipes
+                        loc_work.set_completed()?;
+                        loc_results.set_completed()?;
+                        Err(e)
+                    },
+                    Ok(()) => Ok(())
+                }
             })
         );
     }
@@ -161,8 +169,7 @@ pub fn create(
         })?;
     }
     info!(" ... workers are done ...");
-    // drop(tx_work);
-    drop(pipe_work.tx);
+    pipe_work.close();
     pipe_results.set_completed()?;
 
     info!("... checking worker status.");

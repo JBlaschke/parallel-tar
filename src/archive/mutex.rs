@@ -129,6 +129,8 @@ impl<T: Clone> Pipe<T> {
 
     pub fn output(&self) -> Receiver<T> { self.rx.clone() }
 
+    pub fn close(&self) { drop(self.tx.clone()); }
+
     pub fn take_try_many(&self) -> Result<T, ArchiverError<T>> {
         return take_mutex_try_many(
             &self.output(), 100, Duration::from_millis(128), &self.completed
@@ -144,6 +146,11 @@ impl<T: Clone> Pipe<T> {
     }
 
     pub fn collect_expected(&self, ct_expect: usize) -> Vec<T> {
+        // TODO: this should be handled in collect_expected: if timeout check
+        // for completion.
+        if self.get_completed().unwrap_or(true) {
+            return Vec::<T>::new();
+        }
         return collect_expected(
             ct_expect, &self.rx, Duration::from_millis(4000)
         );
