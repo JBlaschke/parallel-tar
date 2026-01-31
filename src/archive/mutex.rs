@@ -15,7 +15,7 @@ cfg_if::cfg_if! {
 }
 use std::{thread, time::Duration};
 // Logging
-use log::warn;
+use log::{debug, warn};
 
 pub fn set_mutex<T: Copy, S: Clone>(
             mutex: &Arc<Mutex<T>>, val: T
@@ -95,11 +95,12 @@ fn collect_expected<T>(
         }
         match rx.recv_timeout(wait) {
             Ok(result) => {
+                debug!("Received {} out of {}", ct_recv, ct_expect);
                 items.push(result);
                 ct_recv +=1;
             }
             Err(error) => {
-                warn!("recv_timeout failed with: '{}'", error);
+                warn!("recv_timeout failed with: '{}', retrying", error);
             }
         }
     }

@@ -1,3 +1,4 @@
+use crate::files::path::analyze_path;
 use crate::archive::mutex::Pipe;
 use crate::archive::error::ArchiverError;
 use crate::archive::fs::{is_symlink, set_mode_from_path_or_default, find_files};
@@ -11,9 +12,12 @@ use std::thread;
 use std::thread::JoinHandle;
 // Logging
 use log::{warn, info, debug};
+// Working with cwd
+use std::env::{current_dir, set_current_dir};
+use std::path::PathBuf;
 
 fn create_worker_thread(
-            output_tar_path: &str,
+            output_tar_path: &PathBuf,
             pipe_work: &Pipe<String>,
             pipe_results: &Pipe<Result<String, ArchiverError<String>>>,
         ) -> Result<(), ArchiverError<String>> {
@@ -89,6 +93,28 @@ pub fn create(
     let pipe_work    = Pipe::<String>::new();
     let pipe_results = Pipe::<Result<String, ArchiverError<String>>>::new();
 
+    let (base, rel) = analyze_path(target)?;
+    let mut archive_dest = PathBuf::new();
+
+    match base {
+        Some(root_dir) => {
+            info!(
+                "Setting current working dir to: '{}'",
+                root_dir.to_string_lossy()
+            );
+            let cwd = current_dir()?;
+            let _ = set_current_dir(root_dir)?;
+            archive_dest.push(cwd);
+            archive_dest.push(archive_name)
+        },
+        None => {
+            debug!("Not changing working dir");
+            archive_dest.push(archive_name)
+        }
+    };
+
+    info!("Saving archive to: '{}'", archive_dest.to_string_lossy());
+
     // Spawn worker threads
     info!("Starting {} worker threads", num_threads);
     let mut handles: Vec<
@@ -101,18 +127,21 @@ pub fn create(
         let loc_work    = pipe_work.clone();
         let loc_results = pipe_results.clone();
         // Initiate worker thread and "point" them to `name.<thread>.tar`
-        let name = format!("{}.{}.tar", archive_name, idx);
-        info!("Starting worker thread: {} and writing to '{}'", idx, name);
+        let out = archive_dest.join(format!("{}.{}.tar", archive_name, idx));
+        info!(
+            "Starting worker thread: {} and writing to '{}'",
+            idx, out.to_string_lossy()
+        );
         handles.push(
             thread::spawn(move || -> Result<(), ArchiverError<String>> {
-                create_worker_thread(name.as_str(), &loc_work, &loc_results)?;
+                create_worker_thread(&out, &loc_work, &loc_results)?;
                 Ok(())
             })
         );
     }
 
     info!("Enumerating files. Following links? {}", follow_links);
-    let work_items = find_files(target, *follow_links)?;
+    let work_items = find_files(&rel, *follow_links)?;
     // Add work to the work channel
     for work_item in & work_items {
         pipe_work.tx.send(work_item.to_string()).unwrap_or_else( |err| {

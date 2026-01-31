@@ -2,7 +2,7 @@ use crate::archive::error::ArchiverError;
 
 // File system
 use std::fs::{Metadata, symlink_metadata};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 // Logging
 use log::warn;
@@ -13,7 +13,7 @@ use std::os::unix::fs::PermissionsExt;
 use tar::Header;
 
 pub fn find_files(
-        folder_path: &str, follow_links: bool
+        folder_path: &PathBuf, follow_links: bool
     ) -> Result<Vec<String>, ArchiverError<String>> {
 
     let mut files: Vec<String> = Vec::new();
