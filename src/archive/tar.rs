@@ -1,5 +1,5 @@
 use crate::files::path::analyze_path;
-use crate::archive::mutex::Pipe;
+use crate::archive::mutex::{TryRecvError, Pipe};
 use crate::archive::error::ArchiverError;
 use crate::archive::fs::{is_symlink, set_mode_from_path_or_default, find_files};
 
@@ -66,14 +66,22 @@ fn create_worker_thread(
                 }
                 // Used to check work that has been done
                 pipe_results.input().send(Ok(input))?;
-            }
+            },
             Err(error) => {
                 // Check if work is done
                 if pipe_work.get_completed()? {
                     return Ok(());
                 }
-                // If not => return an error
-                return Err(error.into());
+                // If not => return an error, unless we're waiting on an empty
+                // channel
+                match error {
+                    ArchiverError::TryRecvError(TryRecvError::Empty) => {
+                        debug!("Thread waiting on an empty channel");
+                    },
+                    _ => {
+                        return Err(error.into());
+                    }
+                }
             }
         }
     }

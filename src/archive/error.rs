@@ -91,28 +91,6 @@ impl<T: Clone> From<SendError<RTAET<T>>> for ArchiverError<T> {
     }
 }
 
-// fn peel<S, T>(err: S<RTAET<T>>) -> S<T> {
-//     let result = err.into_inner();
-//     match result {
-//         Ok(value) => S(value),
-//         Err(e) => S(e.into_inner())
-//     }
-// }
-
-// impl<T: Clone> ArchiverError<T> {
-//     pub fn into_inner(self) -> Option<T> {
-//         match self {
-//             ArchiverError::SendError(err) => Some(err.into_inner()),
-//             ArchiverError::TryRecvError(_) => None, // no T to extract
-//             ArchiverError::RecvTimeoutError(_) => None,
-//             ArchiverError::Io(_) => None,
-//             ArchiverError::WalkdirError(_) => None,
-//             ArchiverError::LockPoisoned => None,
-//             ArchiverError::ChannelClosed => None,
-//         }
-//     }
-// }
-
 impl<T: Clone> From<ArchiverError<RTAET<T>>> for ArchiverError<T> {
     fn from(item: ArchiverError<RTAET<T>>) -> Self {
         match item {
