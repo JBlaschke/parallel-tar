@@ -35,6 +35,20 @@ jobs:
             builder: zigbuild
             archive_ext: tar.gz
 
+          - runs_on: ubuntu-24.04
+            rust_target: x86_64-unknown-linux-gnu
+            build_target: x86_64-unknown-linux-gnu.2.43
+            asset_target: x86_64-unknown-linux-gnu.2.43
+            builder: zigbuild
+            archive_ext: tar.gz
+
+          - runs_on: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-gnu
+            build_target: aarch64-unknown-linux-gnu.2.43
+            asset_target: aarch64-unknown-linux-gnu.2.43
+            builder: zigbuild
+            archive_ext: tar.gz
+
           # -------------------------
           # Linux (musl) - uses zigbuild
           # Often fully static; avoids glibc compatibility issues entirely
