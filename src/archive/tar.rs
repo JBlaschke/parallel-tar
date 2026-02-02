@@ -6,7 +6,7 @@ use crate::archive::fs::{is_symlink, set_mode_from_path_or_default, find_files};
 // Tar files
 use tar::{Builder, Header, EntryType, Archive};
 // File system
-use std::fs::{File, read_link};
+use std::fs::{File, read_link, create_dir_all};
 // Multi-threading
 use std::thread;
 use std::thread::JoinHandle;
@@ -14,7 +14,7 @@ use std::thread::JoinHandle;
 use log::{error, warn, info, debug};
 // Working with cwd
 use std::env::{current_dir, set_current_dir};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn create_worker_thread(
             output_tar_path: &PathBuf,
@@ -114,6 +114,20 @@ pub fn create(
     };
 
     info!("Saving archive to: '{}'", archive_dest.to_string_lossy());
+
+    let archive_path = Path::new(&archive_dest);
+    if archive_path.exists() {
+        error!("Path '{}' not free", archive_dest.to_string_lossy());
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "Destination path not free."
+        ).into());
+    } else {
+        debug!(
+            "Creating destination folder: {}", archive_dest.to_string_lossy()
+        );
+        create_dir_all(&archive_dest)?;
+    }
 
     // Spawn worker threads
     info!("Starting {} worker threads", num_threads);
