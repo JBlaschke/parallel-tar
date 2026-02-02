@@ -35,6 +35,21 @@ pub fn get_mutex<T: Copy, S: Clone>(
     return Ok(val);
 }
 
+/// Same as `get_mutex` but returns "default" on a failure to get a mutex lock.
+/// The assumption is that a poisoned lock => broken muxt => in some cases we
+/// can assume a default value. Ideally one would use the `get_mutex` function
+/// and properly handle errors, but this might not work for functions like
+/// `collect_expected` which are expected to return a Vector.
+fn check_mutex<T: Copy, S: Clone>(mutex: &Arc<Mutex<T>>, default: T) -> T {
+    match get_mutex::<T, S>(mutex) {
+        Ok(result) => result,
+        Err(error) => {
+            debug!("Failed to get lock: '{}' => assuming defaul", error);
+            default
+        }
+    }
+}
+
 /// Non-blocking (but patient -- i.e. thread sleeps when try_recv fails) attempt
 /// to take (try_recv) operation, which aborts when the `completed` semaphore is
 /// set to `true`
@@ -79,12 +94,13 @@ fn take_mutex_try_many<T: Clone>(
 
 /// Blocking data collection of a known number of elements. This function will
 /// block if expecting more data than there are.
-fn collect_expected<T>(
+fn collect_expected<T: Clone>(
             ct_expect: usize,
             #[cfg(feature = "std")]
             rx: &Arc<Mutex<Receiver<T>>>,
             #[cfg(not(feature = "std"))]
             rx: &Receiver<T>,
+            completed: &Arc<Mutex<bool>>,
             wait: Duration
         ) -> Vec<T> {
     let mut items: Vec<T> = Vec::new();
@@ -101,6 +117,13 @@ fn collect_expected<T>(
             }
             Err(error) => {
                 warn!("recv_timeout failed with: '{}', retrying", error);
+                if check_mutex::<bool, ArchiverError<T>>(completed, true) {
+                    warn!(
+                        "Received premature signal that channel has been \
+                        completed => stopping"
+                    );
+                    break;
+                }
             }
         }
     }
@@ -141,18 +164,22 @@ impl<T: Clone> Pipe<T> {
         set_mutex(&self.completed, true)
     }
 
-    pub fn get_completed(&self) -> Result<bool, ArchiverError<T>>  {
+    pub fn get_completed(&self) -> Result<bool, ArchiverError<T>> {
         get_mutex(&self.completed)
     }
 
+    /// Same as `get_completed` but returns "true" on a failure to get a mutex
+    /// lock. The assumption is that a poisoned lock => broken channel => as
+    /// good as a "completed" channel. Ideally one would use the `get_completed`
+    /// function and properly handle errors, but this might not work for
+    /// functions like `collect_expected` which are expected to return a Vector.
+    pub fn check_completed(&self) -> bool {
+        return check_mutex::<bool, ArchiverError<T>>(&self.completed, true);
+    }
+
     pub fn collect_expected(&self, ct_expect: usize) -> Vec<T> {
-        // TODO: this should be handled in collect_expected: if timeout check
-        // for completion.
-        if self.get_completed().unwrap_or(true) {
-            return Vec::<T>::new();
-        }
         return collect_expected(
-            ct_expect, &self.rx, Duration::from_millis(4000)
+            ct_expect, &self.rx, &self.completed, Duration::from_millis(4000)
         );
     }
 }
