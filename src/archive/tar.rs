@@ -170,7 +170,7 @@ pub fn create(
     // Add work to the work channel
     info!("Sending paths to workers. This will start the archiving files...");
     for work_item in & work_items {
-        debug!("Requestion '{}' be archived", work_item);
+        debug!("Requesting '{}' be archived", work_item);
         pipe_work.tx.send(work_item.to_string()).unwrap_or_else( |err| {
             warn!("Failed to process '{}', due to error: '{}'", work_item, err)
         });
