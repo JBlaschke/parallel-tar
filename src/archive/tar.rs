@@ -129,8 +129,13 @@ pub fn create(
         create_dir_all(&archive_dest)?;
     }
 
+    // This must happen BEFORE the threads are spawned, otherwise they will fail
+    // while trying to receive data from empty channels.
+    info!("SETUP: Enumerating files. Following links? {}", follow_links);
+    let work_items = find_files(&rel, *follow_links)?;
+
     // Spawn worker threads
-    info!("Starting {} worker threads", num_threads);
+    info!("SETUP: Starting {} worker threads", num_threads);
     let mut handles: Vec<
             JoinHandle<Result<(), ArchiverError<String>>>
        > = Vec::with_capacity(*num_threads as usize);
@@ -150,7 +155,7 @@ pub fn create(
             thread::spawn(move || -> Result<(), ArchiverError<String>> {
                 match create_worker_thread(&out, &loc_work, &loc_results) {
                     Err(e) => {
-                        error!("Err {}", e);
+                        error!("Error from spawned thread: '{}'", e);
                         // No more work due to error => terminate pipes
                         loc_work.set_completed()?;
                         loc_results.set_completed()?;
@@ -162,10 +167,10 @@ pub fn create(
         );
     }
 
-    info!("Enumerating files. Following links? {}", follow_links);
-    let work_items = find_files(&rel, *follow_links)?;
     // Add work to the work channel
+    info!("Sending paths to workers. This will start the archiving files...");
     for work_item in & work_items {
+        debug!("Requestion '{}' be archived", work_item);
         pipe_work.tx.send(work_item.to_string()).unwrap_or_else( |err| {
             warn!("Failed to process '{}', due to error: '{}'", work_item, err)
         });
@@ -182,11 +187,11 @@ pub fn create(
             Ok(())
         })?;
     }
-    info!(" ... workers are done ...");
+    info!(" ... workers are done!");
     pipe_work.close();
     pipe_results.set_completed()?;
 
-    info!("... checking worker status.");
+    info!("FINALIZE: checking worker status.");
     let mut successfully_processed: Vec<String> = vec![];
     for i in processed_items {
         match i {
