@@ -110,7 +110,7 @@ jobs:
       # Linux-only: install Zig + cargo-zigbuild
       - name: Install Zig
         if: matrix.builder == 'zigbuild'
-        uses: mlugg/setup-zig@v1
+        uses: mlugg/setup-zig@v2
 
       - name: Install cargo-zigbuild
         if: matrix.builder == 'zigbuild'
