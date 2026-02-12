@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // Definitions and iterators for the tree itself
 pub mod tree;
 

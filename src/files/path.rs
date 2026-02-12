@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 use std::io;
 use std::path::{Component, Path, PathBuf};
 

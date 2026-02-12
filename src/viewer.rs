@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // Stdlib
 use std::error::Error;
 use std::sync::Arc;

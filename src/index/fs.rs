@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 use crate::index::tree::{TreeNode, NodeType};
 use crate::index::error::IndexerError;
 // Working with references and concurrent access

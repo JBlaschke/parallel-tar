@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 use crate::files::path::analyze_path;
 use crate::archive::mutex::Pipe;
 use crate::archive::error::ArchiverError;
