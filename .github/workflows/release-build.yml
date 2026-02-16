@@ -68,13 +68,25 @@ jobs:
             archive_ext: tar.gz
 
           # -------------------------
-          # FreeBSD - uses zigbuild
+          # FreeBSD (built inside VM) - tar.gz
+          # Build on FreeBSD 13.x to avoid FBSD_1.7 (FreeBSD 14 ABI).
           # -------------------------
           - runs_on: ubuntu-24.04
+            builder: freebsd-vm
+            freebsd_release: "13.5"
+            freebsd_arch: x86_64
             rust_target: x86_64-unknown-freebsd
             build_target: x86_64-unknown-freebsd
-            asset_target: x86_64-unknown-freebsd
-            builder: zigbuild
+            asset_target: x86_64-unknown-freebsd13.5
+            archive_ext: tar.gz
+
+          - runs_on: ubuntu-24.04
+            builder: freebsd-vm
+            freebsd_release: "13.5"
+            freebsd_arch: aarch64
+            rust_target: aarch64-unknown-freebsd
+            build_target: aarch64-unknown-freebsd
+            asset_target: aarch64-unknown-freebsd13.5
             archive_ext: tar.gz
 
           # -------------------------
@@ -119,22 +131,27 @@ jobs:
       - name: Setup Python (for packaging)
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.14"
 
-      - name: Install Rust (stable)
+      - name: Install Rust (stable, with targets)
+        if: matrix.builder != 'freebsd-vm'
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.rust_target }}
 
+      - name: Install Rust (stable, host-only for FreeBSD packaging)
+        if: matrix.builder == 'freebsd-vm'
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Cache Cargo
+        if: matrix.builder != 'freebsd-vm'
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: release-${{ matrix.asset_target }}
 
-      # Linux-only: install Zig + cargo-zigbuild
       - name: Install Zig
         if: matrix.builder == 'zigbuild'
-        uses: mlugg/setup-zig@v2
+        uses: mlugg/setup-zig@v1
 
       - name: Install cargo-zigbuild
         if: matrix.builder == 'zigbuild'
@@ -142,13 +159,33 @@ jobs:
         with:
           tool: cargo-zigbuild
 
-      - name: Build (release)
+      - name: Build (release, cargo)
         if: matrix.builder == 'cargo'
         run: cargo build --release --locked --bins --target ${{ matrix.build_target }}
 
       - name: Build (release, zigbuild)
         if: matrix.builder == 'zigbuild'
         run: cargo zigbuild --release --locked --bins --target ${{ matrix.build_target }}
+
+      - name: Build (release, FreeBSD VM)
+        if: matrix.builder == 'freebsd-vm'
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: ${{ matrix.freebsd_release }}
+          arch: ${{ matrix.freebsd_arch }}
+          usesh: true
+          prepare: |
+            pkg update -f
+            pkg install -y rust
+          run: |
+            set -eu
+            cd "$GITHUB_WORKSPACE"
+
+            echo "FreeBSD:"; freebsd-version || true
+            rustc -V
+            cargo -V
+
+            cargo build --release --locked --bins --target ${{ matrix.build_target }}
 
       - name: Package archive (all binaries)
         shell: bash
