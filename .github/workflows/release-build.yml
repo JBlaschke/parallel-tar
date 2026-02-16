@@ -68,6 +68,35 @@ jobs:
             archive_ext: tar.gz
 
           # -------------------------
+          # FreeBSD (glibc baseline 2.32) - uses zigbuild
+          # Produces artifacts that should run on systems with glibc >= 2.32
+          # -------------------------
+          - runs_on: ubuntu-24.04
+            rust_target: x86_64-unknown-freebsd-gnu
+            build_target: x86_64-unknown-freebsd-gnu.2.32
+            asset_target: x86_64-unknown-freebsd-gnu.2.32
+            builder: zigbuild
+            archive_ext: tar.gz
+
+          - runs_on: ubuntu-24.04
+            rust_target: x86_64-unknown-freebsd-gnu
+            build_target: x86_64-unknown-freebsd-gnu.2.43
+            asset_target: x86_64-unknown-freebsd-gnu.2.43
+            builder: zigbuild
+            archive_ext: tar.gz
+
+          # -------------------------
+          # FreeBSD (musl) - uses zigbuild
+          # Often fully static; avoids glibc compatibility issues entirely
+          # -------------------------
+          - runs_on: ubuntu-24.04
+            rust_target: x86_64-unknown-freebsd-musl
+            build_target: x86_64-unknown-freebsd-musl
+            asset_target: x86_64-unknown-freebsd-musl
+            builder: zigbuild
+            archive_ext: tar.gz
+
+          # -------------------------
           # Windows (native cargo build)
           # -------------------------
           - runs_on: windows-2022
