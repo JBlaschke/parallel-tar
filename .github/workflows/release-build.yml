@@ -78,17 +78,6 @@ jobs:
             archive_ext: tar.gz
 
           # -------------------------
-          # FreeBSD (musl) - uses zigbuild
-          # Often fully static; avoids glibc compatibility issues entirely
-          # -------------------------
-          - runs_on: ubuntu-24.04
-            rust_target: x86_64-unknown-freebsd-musl
-            build_target: x86_64-unknown-freebsd-musl
-            asset_target: x86_64-unknown-freebsd-musl
-            builder: zigbuild
-            archive_ext: tar.gz
-
-          # -------------------------
           # Windows (native cargo build)
           # -------------------------
           - runs_on: windows-2022
