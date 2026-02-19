@@ -117,7 +117,7 @@ fn collect_expected<T: Clone>(
                 ct_recv +=1;
             }
             Err(error) => {
-                warn!("recv_timeout failed with: '{}', retrying", error);
+                debug!("recv_timeout failed with: '{}', retrying", error);
                 if check_mutex::<bool, ArchiverError<T>>(completed, true) {
                     warn!(
                         "Received premature signal that channel has been \

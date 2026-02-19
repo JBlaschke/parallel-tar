@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Stdlib
+use std::sync::Arc;
 use std::error::Error;
 
 // Clap
@@ -7,12 +8,40 @@ use clap::{Arg, Command};
 
 use ptar_lib::index::*;
 use ptar_lib::index::tree::TreeNode;
-use ptar_lib::index::serialize::{DataFmt, save_tree};
+use ptar_lib::index::serialize::{DataFmt, save_tree, load_tree};
 use ptar_lib::index::display::format_size;
+use ptar_lib::index::error::IndexerError;
 
 use rayon::ThreadPoolBuilder;
 
 use env_logger;
+
+fn save(
+            tree: Arc<TreeNode>, json_fmt: &bool, index_path: &String
+        ) -> Result<(), IndexerError> {
+
+    let data_fmt = if * json_fmt {
+        DataFmt::Json(index_path.to_string())
+    } else {
+        DataFmt::Idx(index_path.to_string())
+    };
+    println!("Saving index: '{:?}'", data_fmt);
+    save_tree(& tree, data_fmt)
+}
+
+fn load(
+            json_fmt: &bool, index_path: &String
+        ) -> Result<Arc<TreeNode>, IndexerError> {
+
+    let data_fmt = if * json_fmt {
+        DataFmt::Json(index_path.to_string())
+    } else {
+        DataFmt::Idx(index_path.to_string())
+    };
+
+    println!("Loading index at: '{:?}'", data_fmt);
+    load_tree(data_fmt)
+}
 
 fn main() -> Result<(), Box<dyn Error>> {
     // By default emit warnings
@@ -48,6 +77,15 @@ fn main() -> Result<(), Box<dyn Error>> {
             .num_args(0)
         )
         .arg(
+            Arg::new("from_tree")
+            .short('t')
+            .long("tree")
+            .help("Compute index from tree file (don't traverse directory)")
+            .required(false)
+            .conflicts_with_all(&["tree_only"])
+            .num_args(0),
+        )
+        .arg(
             Arg::new("index_path")
             .short('f')
             .long("file")
@@ -79,6 +117,15 @@ fn main() -> Result<(), Box<dyn Error>> {
             .num_args(1)
             .value_parser(clap::value_parser!(u32))
         )
+        .arg(
+            Arg::new("tree_only")
+            .short('e')
+            .long("empty")
+            .help("Create a tree object, leaving hashes and metadata empty")
+            .required(false)
+            .conflicts_with_all(&["from_tree"])
+            .num_args(0)
+        )
         .get_matches();
 
     fn get_arg<'a, T: Clone + Send + Sync + 'static>(
@@ -94,6 +141,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let use_md5: &bool             = get_arg(& args, "use_md5")?;
     let follow_links: &bool        = get_arg(& args, "follow_links")?;
     let valid_symlinks_only: &bool = get_arg(& args, "valid_symlinks_only")?;
+    let tree_only: &bool           = get_arg(& args, "tree_only")?;
+    let from_tree: &bool           = get_arg(& args, "from_tree")?;
 
     // Thread pool used for parallel work
     let nproc: usize = * num_threads as usize;
@@ -101,9 +150,17 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Building tree for: '{}' using {} threads...", target, nproc);
 
-    let tree = TreeNode::from_path(
-        & target, * follow_links, * valid_symlinks_only
-    )?;
+    let tree = if *from_tree {
+        load(json_fmt, target)?
+    } else { 
+        TreeNode::from_path(&target, *follow_links, *valid_symlinks_only)?
+    };
+
+    // Stop right here if only computing the table itself
+    if *tree_only {
+        return Ok(save(tree, json_fmt, index_path)?);
+    }
+
     println!("Computing metadata ...");
     // Compute metadata bottom-up from leaves to root
     let meta = pool.install(|| {tree.compute_metadata()})?;
@@ -139,13 +196,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
     println!("--------------------------------------------------------------");
 
-    let data_fmt = if * json_fmt {
-        DataFmt::Json(index_path.to_string())
-    } else {
-        DataFmt::Idx(index_path.to_string())
-    };
-    println!("Saving index: '{:?}'", data_fmt);
-    let _ = save_tree(& tree, data_fmt);
+    save(tree, json_fmt, index_path)?;
 
     Ok(())
 }
