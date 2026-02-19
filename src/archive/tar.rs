@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use crate::files::path::analyze_path;
+use crate::files::tree::files_from_tree;
 use crate::archive::mutex::Pipe;
 use crate::archive::error::ArchiverError;
 use crate::archive::fs::{is_symlink, set_mode_from_path_or_default, find_files};
@@ -94,7 +95,9 @@ pub fn create(
             archive_name: &String, 
             target: &String,
             num_threads: &u32, 
-            follow_links: &bool
+            follow_links: &bool,
+            from_tree: &bool,
+            json_fmt: &bool,
         ) -> Result<(), ArchiverError<String>> {
     let pipe_work    = Pipe::<String>::new();
     let pipe_results = Pipe::<Result<String, ArchiverError<String>>>::new();
@@ -138,7 +141,11 @@ pub fn create(
     // This must happen BEFORE the threads are spawned, otherwise they will fail
     // while trying to receive data from empty channels.
     info!("SETUP: Enumerating files. Following links? {}", follow_links);
-    let work_items = find_files(&rel, *follow_links)?;
+    let work_items = if *from_tree {
+        files_from_tree(json_fmt, target)?
+    } else {
+        find_files(&rel, *follow_links)?
+    };
 
     // Spawn worker threads
     info!("SETUP: Starting {} worker threads", num_threads);

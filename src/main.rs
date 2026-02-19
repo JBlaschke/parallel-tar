@@ -24,6 +24,23 @@ fn main() -> Result<(), Box<dyn Error>> {
             .index(1)
         )
         .arg(
+            Arg::new("from_tree")
+            .short('t')
+            .long("tree")
+            .help("Assemble archive from tree file (don't traverse directory)")
+            .required(false)
+            .num_args(0),
+        )
+        .arg(
+            Arg::new("json_fmt")
+            .short('j')
+            .long("json")
+            .help("Input index as JSON.")
+            .required(false)
+            .num_args(0)
+            .requires("from_tree")
+        )
+        .arg(
             Arg::new("create")
             .short('c')
             .long("create")
@@ -77,9 +94,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     let create_mode: &bool    = get_arg(&args, "create")?;
     let extract_mode: &bool   = get_arg(&args, "extract")?;
     let follow_links: &bool   = get_arg(&args, "follow_links")?;
+    let from_tree: &bool      = get_arg(& args, "from_tree")?;
+    let json_fmt: &bool       = get_arg(& args, "json_fmt")?;
 
     if * create_mode {
-        create(archive_name, target, num_threads, follow_links)?;
+        create(
+            archive_name, target, num_threads, follow_links,
+            from_tree, json_fmt
+        )?;
     } else if * extract_mode {
         extract(archive_name, target, num_threads)?;
     }
