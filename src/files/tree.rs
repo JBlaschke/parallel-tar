@@ -40,13 +40,9 @@ pub fn files_from_tree(
             NodeType::Symlink{target: _} => files.push(
                 node.path.to_string_lossy().to_string()
             ),
-            // This is a bit funny: tar will package up empty folders, so also
-            // add them to the list
-            NodeType::Directory{children: c} => {
-                if c.len() == 0 {
-                    node.path.to_string_lossy().to_string();
-                }
-            },
+            NodeType::Directory{children: _} => files.push(
+                node.path.to_string_lossy().to_string()
+            ),
             _ => ()
         };
     };
