@@ -80,6 +80,14 @@ fn main() -> Result<(), Box<dyn Error>> {
             .num_args(1)
             .value_parser(clap::value_parser!(u32))
         )
+        .arg(
+            Arg::new("compress")
+            .short('z')
+            .long("compress")
+            .help("Work with compressed tar files")
+            .required(false)
+            .num_args(0)
+        )
         .get_matches();
 
     fn get_arg<'a, T: Clone + Send + Sync + 'static>(
@@ -96,14 +104,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     let follow_links: &bool   = get_arg(&args, "follow_links")?;
     let from_tree: &bool      = get_arg(& args, "from_tree")?;
     let json_fmt: &bool       = get_arg(& args, "json_fmt")?;
+    let compress: &bool       = get_arg(& args, "compress")?;
 
-    if * create_mode {
+    if *create_mode {
         create(
             archive_name, target, num_threads, follow_links,
-            from_tree, json_fmt
+            from_tree, json_fmt, compress
         )?;
-    } else if * extract_mode {
-        extract(archive_name, target, num_threads)?;
+    } else if *extract_mode {
+        extract(archive_name, target, num_threads, compress)?;
     }
 
     Ok(())

@@ -7,6 +7,10 @@ use crate::archive::fs::{is_symlink, set_mode_from_path_or_default, find_files};
 
 // Tar files
 use tar::{Builder, Header, EntryType, Archive};
+// Compression
+use flate2::Compression;
+use flate2::write::GzEncoder;
+use flate2::read::GzDecoder;
 // File system
 use std::fs::{File, read_link, create_dir_all};
 // Multi-threading
@@ -17,14 +21,22 @@ use log::{error, warn, info, debug};
 // Working with cwd
 use std::env::{current_dir, set_current_dir};
 use std::path::{Path, PathBuf};
+// Working with Boxed I/O (for compile-time compression flag)
+use std::io::{Write, Read};
 
 fn create_worker_thread(
             output_tar_path: &PathBuf,
             pipe_work: &Pipe<String>,
             pipe_results: &Pipe<Result<String, ArchiverError<String>>>,
+            compress: &bool
         ) -> Result<(), ArchiverError<String>> {
     let output_file = File::create(output_tar_path)?;
-    let mut archive = Builder::new(output_file);
+    let writer: Box<dyn Write> = if *compress {
+        Box::new(GzEncoder::new(output_file, Compression::default()))
+    } else {
+        Box::new(output_file)
+    };
+    let mut archive = Builder::new(writer);
 
     loop {
         match pipe_work.take_try_many() {
@@ -86,9 +98,20 @@ fn create_worker_thread(
     }
 }
 
-fn extract_worker_thread(tar_path: &str, destination: &str) {
-    let mut ar = Archive::new(File::open(tar_path).unwrap());
-    ar.unpack(destination).unwrap();
+fn extract_worker_thread(
+            tar_path: &str, destination: &str, compress: &bool
+        ) -> Result<(), ArchiverError<String>> {
+
+    let input_file = File::open(tar_path)?;
+
+    let reader: Box<dyn Read> = if *compress {
+        Box::new(GzDecoder::new(input_file))
+    } else {
+        Box::new(input_file)
+    };
+
+    let mut archive = Archive::new(reader);
+    Ok(archive.unpack(destination)?)
 }
 
 pub fn create(
@@ -98,6 +121,7 @@ pub fn create(
             follow_links: &bool,
             from_tree: &bool,
             json_fmt: &bool,
+            compress: &bool
         ) -> Result<(), ArchiverError<String>> {
     let pipe_work    = Pipe::<String>::new();
     let pipe_results = Pipe::<Result<String, ArchiverError<String>>>::new();
@@ -147,7 +171,8 @@ pub fn create(
         find_files(&rel, *follow_links)?
     };
 
-    // Spawn worker threads
+    // Spawn worker num_threads
+    let loc_compress: bool = *compress;
     info!("SETUP: Starting {} worker threads", num_threads);
     let mut handles: Vec<
             JoinHandle<Result<(), ArchiverError<String>>>
@@ -159,14 +184,21 @@ pub fn create(
         let loc_work    = pipe_work.clone();
         let loc_results = pipe_results.clone();
         // Initiate worker thread and "point" them to `name.<thread>.tar`
-        let out = archive_dest.join(format!("{}.{}.tar", archive_name, idx));
+        let name = if loc_compress {
+            format!("{}.{}.tar.gz", archive_name, idx)
+        } else {
+            format!("{}.{}.tar", archive_name, idx)
+        };
+        let out = archive_dest.join(name);
         info!(
             "Starting worker thread: {} and writing to '{}'",
             idx, out.to_string_lossy()
         );
         handles.push(
             thread::spawn(move || -> Result<(), ArchiverError<String>> {
-                match create_worker_thread(&out, &loc_work, &loc_results) {
+                match create_worker_thread(
+                            &out, &loc_work, &loc_results, &loc_compress
+                        ) {
                     Err(e) => {
                         error!("Error from spawned thread: '{}'", e);
                         // No more work due to error => terminate pipes
@@ -224,18 +256,35 @@ pub fn create(
 }
 
 pub fn extract(
-            archive_name: &String, target: &String, num_threads: &u32
+            archive_name: &String, target: &String, num_threads: &u32,
+            compress: &bool
         ) -> Result<(), ArchiverError<String>> {
 
     // Spawn worker threads
+    let loc_compress = *compress;
     info!("Starting {} worker threads", num_threads);
-    let mut handles: Vec<JoinHandle<()>> = Vec::new();
+    let mut handles: Vec<
+            JoinHandle<Result<(), ArchiverError<String>>>
+        > = Vec::with_capacity(*num_threads as usize);
     for idx in 0..*num_threads {
-        let name = format!("{}.{}.tar", archive_name, idx);
+        let name = if *compress {
+            format!("{}.{}.tar.gz", archive_name, idx)
+        } else {
+            format!("{}.{}.tar", archive_name, idx)
+        };
         let ctarget = target.clone();
         handles.push(
             thread::spawn(move || {
-                extract_worker_thread(name.as_str(), ctarget.as_str());
+                match extract_worker_thread(
+                    name.as_str(), ctarget.as_str(), &loc_compress
+                ) {
+                    Err(e) => {
+                        error!("Error from spawned thread: '{}'", e);
+                        // No more work due to error => terminate pipes
+                        Err(e)
+                    },
+                    Ok(()) => Ok(())
+                }
             })
         );
     }
@@ -243,8 +292,9 @@ pub fn extract(
     info!(" ... waiting for workers to finish ...");
     for h in handles {
         h.join().unwrap_or_else( |err| {
-            warn!("Failed thread join: '{:?}'", err)
-        });
+            warn!("Failed thread join: '{:?}'", err);
+            Ok(())
+        })?;
     }
     info!(" ... workers are done.");
 
