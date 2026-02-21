@@ -161,11 +161,11 @@ jobs:
 
       - name: Build (release, cargo)
         if: matrix.builder == 'cargo'
-        run: cargo build --release --locked --bins --target ${{ matrix.build_target }}
+        run: cargo build --release --offline --bins --target ${{ matrix.build_target }}
 
       - name: Build (release, zigbuild)
         if: matrix.builder == 'zigbuild'
-        run: cargo zigbuild --release --locked --bins --target ${{ matrix.build_target }}
+        run: cargo zigbuild --release --offline --bins --target ${{ matrix.build_target }}
 
       - name: Build (release, FreeBSD VM)
         if: matrix.builder == 'freebsd-vm'
