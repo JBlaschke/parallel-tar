@@ -185,7 +185,7 @@ jobs:
             rustc -V
             cargo -V
 
-            cargo build --release --locked --bins --target ${{ matrix.build_target }}
+            cargo build --release --offline --bins --target ${{ matrix.build_target }}
 
       - name: Package archive (all binaries)
         shell: bash
