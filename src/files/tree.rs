@@ -1,13 +1,25 @@
 use crate::index::serialize::{DataFmt, load_tree};
 use crate::index::tree::NodeType;
+use crate::files::path::analyze_path;
 
 use std::io::Error;
 // Logging
-use log::info;
+use log::{info, debug};
+// Paths
+use std::path::PathBuf;
+
+// fn remove_prefix<'a>(
+//             s: &'a PathBuf, prefix: &'a PathBuf
+//         ) -> Result<&'a PathBuf, StripPrefixError> {
+// 
+//     s.strip_prefix(prefix).ok_or(Error::new(
+//         std::io::ErrorKind::InvalidData, "Invalid Prefix"
+//     ))
+// }
 
 pub fn files_from_tree(
             json_fmt: &bool, index_path: &String
-        ) -> Result<Vec<String>, Error> {
+        ) -> Result<(Option<PathBuf>, Vec<String>), Error> {
 
     let data_fmt = if * json_fmt {
         DataFmt::Json(index_path.to_string())
@@ -47,5 +59,27 @@ pub fn files_from_tree(
         };
     };
 
-    Ok(files)
+    let (base, _rel) = analyze_path(&tree.path.to_string_lossy().to_string())?;
+
+    match base {
+        Some(root_dir) => {
+            //let mut prefix = root_dir.to_string_lossy().to_string();
+            debug!("Tree has prefix: '{}'", root_dir.to_string_lossy());
+            let stripped_files: Result<Vec<String>, Error> = files
+                .iter()
+                .map(|s| {
+                    PathBuf::from(s)
+                        .strip_prefix(&root_dir)
+                        .map(|x| x.to_string_lossy().to_string())
+                        .map_err(|_| Error::new(
+                            std::io::ErrorKind::InvalidData, "Invalid Prefix"
+                        ))
+                })
+                .collect();
+            return Ok((Some(root_dir), stripped_files?))
+        },
+        None => {debug!("Not changing working dir");}
+    };
+
+    Ok((None, files))
 }

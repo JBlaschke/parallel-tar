@@ -126,7 +126,14 @@ pub fn create(
     let pipe_work    = Pipe::<String>::new();
     let pipe_results = Pipe::<Result<String, ArchiverError<String>>>::new();
 
-    let (base, rel) = analyze_path(target)?;
+    let mut tfiles: Vec<String> = Vec::new();
+    let (base, rel) = if *from_tree {
+        let (tbase, ifiles) = files_from_tree(json_fmt, target)?;
+        tfiles = ifiles;
+        (tbase, PathBuf::new()) // IMPORTANT: 'rel' not used if building from tree
+    } else {
+        analyze_path(target)?
+    };
     let mut archive_dest = PathBuf::new();
 
     match base {
@@ -152,8 +159,7 @@ pub fn create(
     if archive_path.exists() {
         error!("Path '{}' not free", archive_dest.to_string_lossy());
         return Err(std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
-            "Destination path not free."
+            std::io::ErrorKind::AlreadyExists, "Destination path not free."
         ).into());
     } else {
         debug!(
@@ -166,7 +172,8 @@ pub fn create(
     // while trying to receive data from empty channels.
     info!("SETUP: Enumerating files. Following links? {}", follow_links);
     let work_items = if *from_tree {
-        files_from_tree(json_fmt, target)?
+        // files_from_tree(json_fmt, target)?
+        tfiles
     } else {
         find_files(&rel, *follow_links)?
     };

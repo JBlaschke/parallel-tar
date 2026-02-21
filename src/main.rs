@@ -102,9 +102,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let create_mode: &bool    = get_arg(&args, "create")?;
     let extract_mode: &bool   = get_arg(&args, "extract")?;
     let follow_links: &bool   = get_arg(&args, "follow_links")?;
-    let from_tree: &bool      = get_arg(& args, "from_tree")?;
-    let json_fmt: &bool       = get_arg(& args, "json_fmt")?;
-    let compress: &bool       = get_arg(& args, "compress")?;
+    let from_tree: &bool      = get_arg(&args, "from_tree")?;
+    let json_fmt: &bool       = get_arg(&args, "json_fmt")?;
+    let compress: &bool       = get_arg(&args, "compress")?;
 
     if *create_mode {
         create(
