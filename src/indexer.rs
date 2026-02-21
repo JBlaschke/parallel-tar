@@ -15,6 +15,7 @@ use ptar_lib::index::error::IndexerError;
 use rayon::ThreadPoolBuilder;
 
 use env_logger;
+use log::info;
 
 fn save(
             tree: Arc<TreeNode>, json_fmt: &bool, index_path: &String
@@ -25,7 +26,7 @@ fn save(
     } else {
         DataFmt::Idx(index_path.to_string())
     };
-    println!("Saving index: '{:?}'", data_fmt);
+    info!("Saving index: '{:?}'", data_fmt);
     save_tree(& tree, data_fmt)
 }
 
@@ -39,14 +40,14 @@ fn load(
         DataFmt::Idx(index_path.to_string())
     };
 
-    println!("Loading index at: '{:?}'", data_fmt);
+    info!("Loading index at: '{:?}'", data_fmt);
     load_tree(data_fmt)
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
     // By default emit warnings
     env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("warn")
+        env_logger::Env::default().default_filter_or("info")
     ).init();
 
     let args = Command::new("Indexer for Parallel Tar")
@@ -113,7 +114,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             Arg::new("num_threads")
             .short('n')
             .help("Number of parallel threads to use")
-            .required(true)
+            .required_unless_present("tree_only")
             .num_args(1)
             .value_parser(clap::value_parser!(u32))
         )
@@ -136,7 +137,6 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let target: &String            = get_arg(& args, "target")?;
     let index_path: &String        = get_arg(& args, "index_path")?;
-    let num_threads: &u32          = get_arg(& args, "num_threads")?;
     let json_fmt: &bool            = get_arg(& args, "json_fmt")?;
     let use_md5: &bool             = get_arg(& args, "use_md5")?;
     let follow_links: &bool        = get_arg(& args, "follow_links")?;
@@ -144,11 +144,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let tree_only: &bool           = get_arg(& args, "tree_only")?;
     let from_tree: &bool           = get_arg(& args, "from_tree")?;
 
-    // Thread pool used for parallel work
-    let nproc: usize = * num_threads as usize;
-    let pool = ThreadPoolBuilder::new().num_threads(nproc).build()?;
-
-    println!("Building tree for: '{}' using {} threads...", target, nproc);
+    info!("Building tree for: '{}'", target);
 
     let tree = if *from_tree {
         load(json_fmt, target)?
@@ -161,15 +157,23 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Ok(save(tree, json_fmt, index_path)?);
     }
 
-    println!("Computing metadata ...");
+    // Only need number of threads from now on
+    let num_threads: &u32 = get_arg(& args, "num_threads")?;
+
+    // Thread pool used for parallel work
+    let nproc: usize = * num_threads as usize;
+    info!("Using {} threads...", nproc);
+    let pool = ThreadPoolBuilder::new().num_threads(nproc).build()?;
+
+    info!("Computing metadata ...");
     // Compute metadata bottom-up from leaves to root
     let meta = pool.install(|| {tree.compute_metadata()})?;
-    println!("Computing hashes ...");
+    info!("Computing hashes ...");
     // Compute hashes bottom-up from leaves to root
     let hash = pool.install(|| {tree.compute_hashes(*use_md5)})?;
 
     // Display results
-    println!(
+    info!(
         "Indexed: {} files, {} directories, {} total", 
         meta.files, meta.dirs, format_size(meta.size as u64)
     );
