@@ -8,15 +8,6 @@ use log::{info, debug};
 // Paths
 use std::path::PathBuf;
 
-// fn remove_prefix<'a>(
-//             s: &'a PathBuf, prefix: &'a PathBuf
-//         ) -> Result<&'a PathBuf, StripPrefixError> {
-// 
-//     s.strip_prefix(prefix).ok_or(Error::new(
-//         std::io::ErrorKind::InvalidData, "Invalid Prefix"
-//     ))
-// }
-
 pub fn files_from_tree(
             json_fmt: &bool, index_path: &String
         ) -> Result<(Option<PathBuf>, Vec<String>), Error> {
@@ -63,7 +54,8 @@ pub fn files_from_tree(
 
     match base {
         Some(root_dir) => {
-            //let mut prefix = root_dir.to_string_lossy().to_string();
+            //This stripping will work because the list of paths are generated
+            //from a tree => they are all guaranteed to have the same prefix.
             debug!("Tree has prefix: '{}'", root_dir.to_string_lossy());
             let stripped_files: Result<Vec<String>, Error> = files
                 .iter()
