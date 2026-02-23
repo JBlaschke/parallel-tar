@@ -23,6 +23,8 @@ use std::env::{current_dir, set_current_dir};
 use std::path::{Path, PathBuf};
 // Working with Boxed I/O (for compile-time compression flag)
 use std::io::{Write, Read};
+// Use HashSet to track the completed items, which makes later lookup faster
+use std::collections::HashSet;
 
 fn create_worker_thread(
             output_tar_path: &PathBuf,
@@ -244,21 +246,25 @@ pub fn create(
     pipe_results.set_completed()?;
 
     info!("FINALIZE: checking worker status.");
-    let mut successfully_processed: Vec<String> = vec![];
+    let mut successfully_processed: HashSet<String> = HashSet::with_capacity(
+        processed_items.len()
+    );
     for i in processed_items {
         match i {
-            Ok(n) => successfully_processed.push(n),
+            Ok(n) => {
+                let _ = successfully_processed.insert(n);
+            },
             Err(e) => warn!("Worker returned error: '{}'", e)
         };
     }
     for i in work_items {
-        if ! successfully_processed.iter().any(|e| *e == i) {
+        if ! successfully_processed.contains(&i) {
             warn!("Work item {} requested but not processed!", i);
         } else {
             debug!("Work item {} requested and processed", i);
         }
     }
-
+    info!("DONE.");
     Ok(())
 }
 
