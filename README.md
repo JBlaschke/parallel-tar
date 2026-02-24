@@ -95,6 +95,7 @@ $ parallel-tar -n 16 -t -c -z -f example example.etr
 [2026-02-22T13:56:49Z INFO  ptar_lib::archive::tar]  ... waiting for workers to finish ...
 [2026-02-22T13:56:49Z INFO  ptar_lib::archive::tar]  ... workers are done!
 [2026-02-22T13:56:49Z INFO  ptar_lib::archive::tar] FINALIZE: checking worker status.
+[2026-02-22T13:56:52Z INFO  ptar_lib::archive::tar] DONE.
 ```
 
 You might not see much happening after
