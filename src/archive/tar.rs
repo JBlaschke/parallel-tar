@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-use crate::files::path::analyze_path;
+use crate::files::path::{
+    DirPlan, analyze_path, record_desired_dir_mode, sanitize_rel_path,
+    ensure_owner_writable, finalize_directory_permissions
+};
 use crate::files::tree::files_from_tree;
 use crate::archive::mutex::Pipe;
 use crate::archive::error::ArchiverError;
@@ -16,6 +19,7 @@ use std::fs::{File, read_link, create_dir_all};
 // Multi-threading
 use std::thread;
 use std::thread::JoinHandle;
+use std::sync::{Arc, Mutex};
 // Logging
 use log::{error, warn, info, debug};
 // Working with cwd
@@ -101,7 +105,11 @@ fn create_worker_thread(
 }
 
 fn extract_worker_thread(
-            tar_path: &str, destination: &str, compress: &bool
+            tar_path: &str,
+            destination: &str,
+            compress: &bool,
+            priority: usize,
+            plan: Arc<Mutex<DirPlan>>
         ) -> Result<(), ArchiverError<String>> {
 
     let input_file = File::open(tar_path)?;
@@ -112,8 +120,59 @@ fn extract_worker_thread(
         Box::new(input_file)
     };
 
+    let destination_path = PathBuf::from(destination);
     let mut archive = Archive::new(reader);
-    Ok(archive.unpack(destination)?)
+    //Ok(archive.unpack(destination)?)
+    for entry_res in archive.entries()? {
+        let mut entry = entry_res?;
+        let ty = entry.header().entry_type();
+
+        let rel = match entry.path() {
+            Ok(p) => sanitize_rel_path(&p),
+            Err(_) => None,
+        };
+        let Some(rel) = rel else {
+            // skip unsafe paths
+            continue;
+        };
+
+        let full_path = destination_path.join(&rel);
+
+        if ty == EntryType::Directory {
+            // Create it but DO NOT apply archive mode yet.
+            create_dir_all(&full_path)?;
+
+            let mut guard = plan.lock()?;
+            ensure_owner_writable(&full_path, &mut guard)?;
+
+            if let Ok(mode) = entry.header().mode() {
+                // Match tar crate default-ish: ignore suid/sgid/sticky unless you truly want them.
+                let mode = mode & 0o777;
+                record_desired_dir_mode(&mut guard, full_path, mode, priority);
+            }
+            continue;
+        }
+
+        // Ensure parent chain writable (only inside destination).
+        if let Some(parent) = full_path.parent() {
+            let mut cur = parent;
+            while cur.starts_with(destination) && cur != destination {
+                if cur.exists() {
+                    let mut guard = plan.lock()?;
+                    ensure_owner_writable(cur, &mut guard)?;
+                }
+                cur = match cur.parent() {
+                    Some(p) => p,
+                    None => break,
+                };
+            }
+        }
+
+        // Extract safely (tar crate handles traversal checks, symlinks, etc.)
+        entry.unpack_in(destination)?;
+    }
+
+    Ok(())
 }
 
 pub fn create(
@@ -269,9 +328,13 @@ pub fn create(
 }
 
 pub fn extract(
-            archive_name: &String, target: &String, num_threads: &u32,
+            archive_name: &String,
+            target: &String,
+            num_threads: &u32,
             compress: &bool
         ) -> Result<(), ArchiverError<String>> {
+
+    let plan = Arc::new(Mutex::new(DirPlan::default()));
 
     // Spawn worker threads
     let loc_compress = *compress;
@@ -285,11 +348,13 @@ pub fn extract(
         } else {
             format!("{}.{}.tar", archive_name, idx)
         };
+        let plan = plan.clone();
+        let prio = idx as usize; // Use loop index to assign priorities;
         let ctarget = target.clone();
         handles.push(
             thread::spawn(move || {
                 match extract_worker_thread(
-                    name.as_str(), ctarget.as_str(), &loc_compress
+                    name.as_str(), ctarget.as_str(), &loc_compress, prio, plan
                 ) {
                     Err(e) => {
                         error!("Error from spawned thread: '{}'", e);
@@ -309,7 +374,12 @@ pub fn extract(
             Ok(())
         })?;
     }
-    info!(" ... workers are done.");
+    info!(" ... workers are done!");
+
+    info!("FINALIZE: ensuring file and directory permissions match archive.");
+    let plan = Arc::try_unwrap(plan).expect("plan still shared").into_inner()?;
+    finalize_directory_permissions(plan)?;
+    info!("DONE.");
 
     Ok(())
 }
