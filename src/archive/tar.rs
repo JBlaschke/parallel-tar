@@ -26,7 +26,7 @@ use log::{error, warn, info, debug};
 use std::env::{current_dir, set_current_dir};
 use std::path::{Path, PathBuf};
 // Working with Boxed I/O (for compile-time compression flag)
-use std::io::{Write, Read};
+use std::io::{Write, Read, ErrorKind};
 // Use HashSet to track the completed items, which makes later lookup faster
 use std::collections::HashSet;
 
@@ -140,13 +140,34 @@ fn extract_worker_thread(
 
         if ty == EntryType::Directory {
             // Create it but DO NOT apply archive mode yet.
-            create_dir_all(&full_path)?;
+            match create_dir_all(&full_path){
+                Ok(()) => (),
+                Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+                    if std::path::Path::new(&full_path).is_dir() {
+                        debug!(
+                            "Possible race condition when creating: '{}'",
+                            full_path.to_string_lossy()
+                        );
+                        // Treat as success
+                    } else {
+                        error!(
+                            "Path: '{}' already exists but is not a directory.",
+                            full_path.to_string_lossy()
+                        );
+                        return Err(e.into());
+                    }
+                },
+                Err(e) => {
+                    return Err(e.into());
+                }
+            }
 
             let mut guard = plan.lock()?;
             ensure_owner_writable(&full_path, &mut guard)?;
 
             if let Ok(mode) = entry.header().mode() {
-                // Match tar crate default-ish: ignore suid/sgid/sticky unless you truly want them.
+                // Match tar crate default-ish: ignore suid/sgid/sticky unless
+                // you truly want them.
                 let mode = mode & 0o777;
                 record_desired_dir_mode(&mut guard, full_path, mode, priority);
             }
