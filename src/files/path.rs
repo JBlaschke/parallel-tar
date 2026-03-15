@@ -174,8 +174,8 @@ pub fn set_chmod_plan(
         match plan.original.get(&dir.to_path_buf()) {
             Some(existing) if existing.priority > priority => {
                 debug!(
-                    "Destination path '{}' already processed: '{}', '{}'",
-                    dir.to_string_lossy(), existing.readonly, readonly
+                    "Destination path '{}' already processed: 'readonly={}'",
+                    dir.to_string_lossy(), existing.readonly
                 );
                 return Ok(());
             }
