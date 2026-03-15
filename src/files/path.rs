@@ -133,17 +133,9 @@ pub fn sanitize_rel_path(path: &Path) -> Option<PathBuf> {
 }
 
 #[cfg(unix)]
-pub fn ensure_owner_writable(
+pub fn set_chmod_plan(
             plan: &mut DirPlan, dir: &Path, mode: u32, priority: usize
         ) -> io::Result<()> {
-    // use std::os::unix::fs::PermissionsExt;
-
-    // let meta = fs::symlink_metadata(dir)?;
-    // if !meta.is_dir() {
-    //     return Ok(());
-    // }
-
-    // let mode = meta.permissions().mode();
 
     // Need write+execute on a directory to create entries inside it.
     let need_bits = 0o300;
@@ -151,62 +143,59 @@ pub fn ensure_owner_writable(
         match plan.original.get(&dir.to_path_buf()) {
             Some(existing) if existing.priority > priority => {
                 debug!(
-                    "Destination path '{}[{}, {}]' already processed",
+                    "Destination path '{}' already processed: '{}', '{}'",
                     dir.to_string_lossy(), existing.mode, mode
                 );
                 return Ok(());
             }
             _ => {
                 debug!(
-                    "Altering mode for '{}': '{}' => '{}'",
-                    dir.to_string_lossy(), mode, mode | need_bits
+                    "Registering mode for '{}': '{}'",
+                    dir.to_string_lossy(), mode,
                 );
                 plan.original.insert(
                     dir.to_path_buf(), DirMode { mode, priority }
                 );
             }
         }
-        // debug!("hio");
-        // fs::set_permissions(dir, fs::Permissions::from_mode(mode | need_bits))?;
     }
     Ok(())
 }
 
 #[cfg(windows)]
-pub fn ensure_owner_writable(
+pub fn set_chmod_plan(
             plan: &mut DirPlan, dir: &Path, mode: u32, priority: usize
         ) -> io::Result<()> {
-    // Windows doesn't use POSIX modes; "read-only" is a flag.
-    let meta = fs::metadata(dir)?;
-    if !meta.is_dir() {
-        return Ok(());
-    }
-    // let mut perm = meta.permissions();
-    // if perm.readonly() {
+
+    // Windows doesn't use POSIX modes; "read-only" is a flag. We're inferring
+    // this from no write permissions for user, group, or others in the tar
+    // header's mode byte.
     if (mode & 0o222) == 0 {
         match plan.original.get(&dir.to_path_buf()) {
             Some(existing) if existing.priority > priority => {
                 debug!(
-                    "Destination path '{}[{}, {}]' already processed",
+                    "Destination path '{}' already processed: '{}', '{}'",
                     dir.to_string_lossy(), existing.readonly, readonly
                 );
                 return Ok(());
             }
             _ => {
+                debug!(
+                    "Registering mode for '{}': 'readonly=true'",
+                    dir.to_string_lossy(),
+                );
                 plan.original.insert(
                     dir.to_path_buf(), 
-                    DirMode { readonly:true, priority:priority }
+                    DirMode { readonly: true, priority: priority }
                 );
             }
         }
-        // perm.set_readonly(false);
-        // fs::set_permissions(dir, perm)?;
     }
     Ok(())
 }
 
 #[cfg(unix)]
-pub fn finalize_directory_permissions(plan: DirPlan) -> io::Result<()> {
+pub fn apply_chmod_plan(plan: DirPlan) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
     // Apply final perms deepest-first (deepest first because can't alter child
@@ -225,7 +214,7 @@ pub fn finalize_directory_permissions(plan: DirPlan) -> io::Result<()> {
 }
 
 #[cfg(windows)]
-pub fn finalize_directory_permissions(plan: DirPlan) -> io::Result<()> {
+pub fn apply_chmod_plan(plan: DirPlan) -> io::Result<()> {
     // Apply final perms deepest-first (deepest first because can't alter child
     // perms if parent is RO).
     let mut dirs: Vec<PathBuf> = plan.original.keys().cloned().collect();

@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use crate::files::path::{
-    DirPlan, analyze_path, sanitize_rel_path, ensure_owner_writable,
-    finalize_directory_permissions
+    DirPlan, analyze_path, sanitize_rel_path, set_chmod_plan, apply_chmod_plan
 };
 use crate::files::tree::files_from_tree;
 use crate::archive::mutex::Pipe;
@@ -26,7 +25,7 @@ use log::{error, warn, info, debug};
 use std::env::{current_dir, set_current_dir};
 use std::path::{Path, PathBuf};
 // Working with Boxed I/O (for compile-time compression flag)
-use std::io::{Write, Read, ErrorKind};
+use std::io::{Write, Read};
 // Use HashSet to track the completed items, which makes later lookup faster
 use std::collections::HashSet;
 
@@ -135,6 +134,7 @@ fn scan_dirs_worker_thread(
             Err(_) => None,
         };
         let Some(rel) = rel else {
+            warn!("Did not extract: '{:?}', path is unsafe", entry.path());
             // skip unsafe paths
             continue;
         };
@@ -142,13 +142,12 @@ fn scan_dirs_worker_thread(
         let full_path = destination_path.join(&rel);
         pipe_results.input().send(full_path.to_string_lossy().to_string())?;
 
-        // Does this work on windows?
         if let Ok(mode) = entry.header().mode() {
             // Match tar crate default-ish: ignore suid/sgid/sticky unless you
             // truly want them.
             let mode = mode & 0o777;
             let mut guard = plan.lock()?;
-            ensure_owner_writable(&mut guard, &full_path, mode, priority)?;
+            set_chmod_plan(&mut guard, &full_path, mode, priority)?;
         }
     }
 
@@ -158,9 +157,7 @@ fn scan_dirs_worker_thread(
 fn extract_worker_thread(
             tar_path: &str,
             destination: &str,
-            compress: &bool,
-            priority: usize,
-            plan: Arc<Mutex<DirPlan>>
+            compress: &bool
         ) -> Result<(), ArchiverError<String>> {
 
     let input_file = File::open(tar_path)?;
@@ -171,7 +168,6 @@ fn extract_worker_thread(
         Box::new(input_file)
     };
 
-    let destination_path = PathBuf::from(destination);
     let mut archive = Archive::new(reader);
 
     for entry_res in archive.entries()? {
@@ -186,57 +182,11 @@ fn extract_worker_thread(
             Ok(p) => sanitize_rel_path(&p),
             Err(_) => None,
         };
-        let Some(rel) = rel else {
+        let Some(_rel) = rel else {
+            warn!("Did not extract: '{:?}', path is unsafe", entry.path());
             // skip unsafe paths
             continue;
         };
-
-        // let full_path = destination_path.join(&rel);
-
-        // if ty == EntryType::Directory {
-        //     // Create it but DO NOT apply archive mode yet.
-        //     match create_dir_all(&full_path){
-        //         Ok(()) => (),
-        //         Err(e) if e.kind() == ErrorKind::AlreadyExists => {
-        //             if std::path::Path::new(&full_path).is_dir() {
-        //                 debug!(
-        //                     "Possible race condition when creating: '{}'",
-        //                     full_path.to_string_lossy()
-        //                 );
-        //                 // Treat as success
-        //             } else {
-        //                 error!(
-        //                     "Path: '{}' already exists but is not a directory.",
-        //                     full_path.to_string_lossy()
-        //                 );
-        //                 return Err(e.into());
-        //             }
-        //         },
-        //         Err(e) => {
-        //             return Err(e.into());
-        //         }
-        //     }
-
-        //     let mut guard = plan.lock()?;
-        //     ensure_owner_writable(&full_path, &mut guard, priority)?;
-
-        //     continue;
-        // }
-
-        // // Ensure parent chain writable (only inside destination).
-        // if let Some(parent) = full_path.parent() {
-        //     let mut cur = parent;
-        //     while cur.starts_with(destination) && cur != destination {
-        //         if cur.exists() {
-        //             let mut guard = plan.lock()?;
-        //             ensure_owner_writable(cur, &mut guard, priority)?;
-        //         }
-        //         cur = match cur.parent() {
-        //             Some(p) => p,
-        //             None => break,
-        //         };
-        //     }
-        // }
 
         // Extract safely (tar crate handles traversal checks, symlinks, etc.)
         entry.unpack_in(destination)?;
@@ -483,13 +433,11 @@ pub fn extract(
         } else {
             format!("{}.{}.tar", archive_name, idx)
         };
-        let plan = plan.clone();
-        let prio = idx as usize; // Use loop index to assign priorities;
         let ctarget = target.clone();
         extract_handles.push(
             thread::spawn(move || {
                 match extract_worker_thread(
-                    name.as_str(), ctarget.as_str(), &loc_compress, prio, plan
+                    name.as_str(), ctarget.as_str(), &loc_compress
                 ) {
                     Err(e) => {
                         error!("Error from spawned 'extract' thread: '{}'", e);
@@ -513,7 +461,7 @@ pub fn extract(
 
     info!("FINALIZE: ensuring file and directory permissions match archive.");
     let plan = Arc::try_unwrap(plan).expect("plan still shared").into_inner()?;
-    finalize_directory_permissions(plan)?;
+    apply_chmod_plan(plan)?;
     info!("DONE.");
 
     Ok(())

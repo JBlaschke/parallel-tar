@@ -132,7 +132,9 @@ fn collect_expected<T: Clone>(
 }
 
 /// Blocking data collection of an unknown number of elements. This function
-/// will block until we completed semaphore is set to 'true'.
+/// will block until we 'completed' semaphore is set to 'true'. This is
+/// blocking, and will only unblock when all producers are done, at which point
+/// 'completed' can be set to 'true'.
 fn collect_until_finished<T: Clone>(
             #[cfg(feature = "std")]
             rx: &Arc<Mutex<Receiver<T>>>,
@@ -144,6 +146,10 @@ fn collect_until_finished<T: Clone>(
     let mut items: Vec<T> = Vec::new();
     let mut ct_recv = 0;
     loop {
+        // Using try_recv instead of recv_timeout in case data is taking longer
+        // to read -- this is meant to be used after the producers have finished
+        // (unlike collect_expected, which is meant to be used while producers
+        // are running.)
         match rx.try_recv() {
             Ok(result) => {
                 debug!("Received {}", ct_recv);
