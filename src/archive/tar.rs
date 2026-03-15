@@ -358,7 +358,7 @@ pub fn extract(
     let loc_compress = *compress;
 
     // Spawn worker threads
-    info!("Starting {} worker threads", num_threads);
+    info!("SETUP for PHASE 1: Starting {} worker threads", num_threads);
 
     let pipe_dirs = Pipe::<String>::new();
     let mut scan_handles: Vec<
@@ -375,6 +375,10 @@ pub fn extract(
         } else {
             format!("{}.{}.tar", archive_name, idx)
         };
+        info!(
+            "Starting worker thread: {} and scanning all folders in: '{}'",
+            idx, name
+        );
         let plan = plan.clone();
         let prio = idx as usize; // Use loop index to assign priorities;
         let ctarget = target.clone();
@@ -395,7 +399,7 @@ pub fn extract(
         );
     }
 
-    info!("... scanning for directories ...");
+    info!("... waiting for directories to be scanned ...");
     for h in scan_handles {
         h.join().unwrap_or_else( |err| {
             warn!("Failed thread join: '{:?}'", err);
@@ -410,7 +414,7 @@ pub fn extract(
     let dirs = pipe_dirs.collect_until_finished();
     pipe_dirs.close();
 
-    info!("Creating directories ...");
+    info!("PHASE 1: Creating directories ...");
     let mut created_dirs: HashSet<String> = HashSet::with_capacity(
         dirs.len()
     );
@@ -422,8 +426,9 @@ pub fn extract(
         let _ = create_dir_all(&i);
         let _ = created_dirs.insert(i);
     }
-    info!(" ... finished creating directories!");
+    info!(" ... finished creating directories! (PHASE 1)");
 
+    info!("SETUP for PHASE 2: Starting {} worker threads", num_threads);
     let mut extract_handles: Vec<
             JoinHandle<Result<(), ArchiverError<String>>>
         > = Vec::with_capacity(*num_threads as usize);
@@ -433,6 +438,10 @@ pub fn extract(
         } else {
             format!("{}.{}.tar", archive_name, idx)
         };
+        info!(
+            "Starting worker thread: {} and extracting all files in: '{}'",
+            idx, name
+        );
         let ctarget = target.clone();
         extract_handles.push(
             thread::spawn(move || {
@@ -457,7 +466,7 @@ pub fn extract(
             Ok(())
         })?;
     }
-    info!(" ... workers are done!");
+    info!(" ... workers are done! (PHASE 2)");
 
     info!("FINALIZE: ensuring file and directory permissions match archive.");
     let plan = Arc::try_unwrap(plan).expect("plan still shared").into_inner()?;
