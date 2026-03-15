@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use crate::files::path::{
-    DirPlan, analyze_path, record_desired_dir_mode, sanitize_rel_path,
-    ensure_owner_writable, finalize_directory_permissions
+    DirPlan, analyze_path, sanitize_rel_path, ensure_owner_writable,
+    finalize_directory_permissions
 };
 use crate::files::tree::files_from_tree;
 use crate::archive::mutex::Pipe;
@@ -104,6 +104,57 @@ fn create_worker_thread(
     }
 }
 
+fn scan_dirs_worker_thread(
+            tar_path: &str,
+            destination: &str,
+            pipe_results: &Pipe<String>,
+            compress: &bool,
+            priority: usize,
+            plan: Arc<Mutex<DirPlan>>
+        ) -> Result<(), ArchiverError<String>> {
+
+    let input_file = File::open(tar_path)?;
+
+    let reader: Box<dyn Read> = if *compress {
+        Box::new(GzDecoder::new(input_file))
+    } else {
+        Box::new(input_file)
+    };
+
+    let destination_path = PathBuf::from(destination);
+    let mut archive = Archive::new(reader);
+
+    for entry_res in archive.entries()? {
+        let entry = entry_res?;
+        if entry.header().entry_type() != EntryType::Directory {
+            continue;
+        }
+
+        let rel = match entry.path() {
+            Ok(p) => sanitize_rel_path(&p),
+            Err(_) => None,
+        };
+        let Some(rel) = rel else {
+            // skip unsafe paths
+            continue;
+        };
+
+        let full_path = destination_path.join(&rel);
+        pipe_results.input().send(full_path.to_string_lossy().to_string())?;
+
+        // Does this work on windows?
+        if let Ok(mode) = entry.header().mode() {
+            // Match tar crate default-ish: ignore suid/sgid/sticky unless you
+            // truly want them.
+            let mode = mode & 0o777;
+            let mut guard = plan.lock()?;
+            ensure_owner_writable(&mut guard, &full_path, mode, priority)?;
+        }
+    }
+
+    Ok(())
+}
+
 fn extract_worker_thread(
             tar_path: &str,
             destination: &str,
@@ -122,10 +173,14 @@ fn extract_worker_thread(
 
     let destination_path = PathBuf::from(destination);
     let mut archive = Archive::new(reader);
-    //Ok(archive.unpack(destination)?)
+
     for entry_res in archive.entries()? {
         let mut entry = entry_res?;
-        let ty = entry.header().entry_type();
+
+        // Directories treated seperately
+        if entry.header().entry_type() == EntryType::Directory {
+            continue;
+        }
 
         let rel = match entry.path() {
             Ok(p) => sanitize_rel_path(&p),
@@ -136,58 +191,52 @@ fn extract_worker_thread(
             continue;
         };
 
-        let full_path = destination_path.join(&rel);
+        // let full_path = destination_path.join(&rel);
 
-        if ty == EntryType::Directory {
-            // Create it but DO NOT apply archive mode yet.
-            match create_dir_all(&full_path){
-                Ok(()) => (),
-                Err(e) if e.kind() == ErrorKind::AlreadyExists => {
-                    if std::path::Path::new(&full_path).is_dir() {
-                        debug!(
-                            "Possible race condition when creating: '{}'",
-                            full_path.to_string_lossy()
-                        );
-                        // Treat as success
-                    } else {
-                        error!(
-                            "Path: '{}' already exists but is not a directory.",
-                            full_path.to_string_lossy()
-                        );
-                        return Err(e.into());
-                    }
-                },
-                Err(e) => {
-                    return Err(e.into());
-                }
-            }
+        // if ty == EntryType::Directory {
+        //     // Create it but DO NOT apply archive mode yet.
+        //     match create_dir_all(&full_path){
+        //         Ok(()) => (),
+        //         Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+        //             if std::path::Path::new(&full_path).is_dir() {
+        //                 debug!(
+        //                     "Possible race condition when creating: '{}'",
+        //                     full_path.to_string_lossy()
+        //                 );
+        //                 // Treat as success
+        //             } else {
+        //                 error!(
+        //                     "Path: '{}' already exists but is not a directory.",
+        //                     full_path.to_string_lossy()
+        //                 );
+        //                 return Err(e.into());
+        //             }
+        //         },
+        //         Err(e) => {
+        //             return Err(e.into());
+        //         }
+        //     }
 
-            let mut guard = plan.lock()?;
-            ensure_owner_writable(&full_path, &mut guard)?;
+        //     let mut guard = plan.lock()?;
+        //     ensure_owner_writable(&full_path, &mut guard, priority)?;
 
-            if let Ok(mode) = entry.header().mode() {
-                // Match tar crate default-ish: ignore suid/sgid/sticky unless
-                // you truly want them.
-                let mode = mode & 0o777;
-                record_desired_dir_mode(&mut guard, full_path, mode, priority);
-            }
-            continue;
-        }
+        //     continue;
+        // }
 
-        // Ensure parent chain writable (only inside destination).
-        if let Some(parent) = full_path.parent() {
-            let mut cur = parent;
-            while cur.starts_with(destination) && cur != destination {
-                if cur.exists() {
-                    let mut guard = plan.lock()?;
-                    ensure_owner_writable(cur, &mut guard)?;
-                }
-                cur = match cur.parent() {
-                    Some(p) => p,
-                    None => break,
-                };
-            }
-        }
+        // // Ensure parent chain writable (only inside destination).
+        // if let Some(parent) = full_path.parent() {
+        //     let mut cur = parent;
+        //     while cur.starts_with(destination) && cur != destination {
+        //         if cur.exists() {
+        //             let mut guard = plan.lock()?;
+        //             ensure_owner_writable(cur, &mut guard, priority)?;
+        //         }
+        //         cur = match cur.parent() {
+        //             Some(p) => p,
+        //             None => break,
+        //         };
+        //     }
+        // }
 
         // Extract safely (tar crate handles traversal checks, symlinks, etc.)
         entry.unpack_in(destination)?;
@@ -289,7 +338,7 @@ pub fn create(
                             &out, &loc_work, &loc_results, &loc_compress
                         ) {
                     Err(e) => {
-                        error!("Error from spawned thread: '{}'", e);
+                        error!("Error from spawned 'create' thread: '{}'", e);
                         // No more work due to error => terminate pipes
                         loc_work.set_completed()?;
                         loc_results.set_completed()?;
@@ -356,11 +405,76 @@ pub fn extract(
         ) -> Result<(), ArchiverError<String>> {
 
     let plan = Arc::new(Mutex::new(DirPlan::default()));
+    let loc_compress = *compress;
 
     // Spawn worker threads
-    let loc_compress = *compress;
     info!("Starting {} worker threads", num_threads);
-    let mut handles: Vec<
+
+    let pipe_dirs = Pipe::<String>::new();
+    let mut scan_handles: Vec<
+            JoinHandle<Result<(), ArchiverError<String>>>
+        > = Vec::with_capacity(*num_threads as usize);
+
+    for idx in 0..*num_threads {
+        // Per-thread (local) copies of the work and results pipes => avoid
+        // moving their originals out of this scope by the `move` closure in
+        // `thread::spawn`
+        let loc_dirs = pipe_dirs.clone();
+        let name = if *compress {
+            format!("{}.{}.tar.gz", archive_name, idx)
+        } else {
+            format!("{}.{}.tar", archive_name, idx)
+        };
+        let plan = plan.clone();
+        let prio = idx as usize; // Use loop index to assign priorities;
+        let ctarget = target.clone();
+        scan_handles.push(
+            thread::spawn(move || {
+                match scan_dirs_worker_thread(
+                    name.as_str(), ctarget.as_str(), &loc_dirs,
+                    &loc_compress, prio, plan
+                ) {
+                    Err(e) => {
+                        error!("Error from spawned 'scan' thread: '{}'", e);
+                        // No more work due to error => terminate pipes
+                        Err(e)
+                    },
+                    Ok(()) => Ok(())
+                }
+            })
+        );
+    }
+
+    info!("... scanning for directories ...");
+    for h in scan_handles {
+        h.join().unwrap_or_else( |err| {
+            warn!("Failed thread join: '{:?}'", err);
+            Ok(())
+        })?;
+    }
+    info!(" ... workers are done scanning directories!");
+    pipe_dirs.set_completed()?;
+
+    // IMPORTANT: collecting from this pipe _after_ join ensures that the
+    // completion signal is sent before blocking on `collect`
+    let dirs = pipe_dirs.collect_until_finished();
+    pipe_dirs.close();
+
+    info!("Creating directories ...");
+    let mut created_dirs: HashSet<String> = HashSet::with_capacity(
+        dirs.len()
+    );
+    for i in dirs {
+        if created_dirs.contains(&i) {
+            continue;
+        }
+
+        let _ = create_dir_all(&i);
+        let _ = created_dirs.insert(i);
+    }
+    info!(" ... finished creating directories!");
+
+    let mut extract_handles: Vec<
             JoinHandle<Result<(), ArchiverError<String>>>
         > = Vec::with_capacity(*num_threads as usize);
     for idx in 0..*num_threads {
@@ -372,13 +486,13 @@ pub fn extract(
         let plan = plan.clone();
         let prio = idx as usize; // Use loop index to assign priorities;
         let ctarget = target.clone();
-        handles.push(
+        extract_handles.push(
             thread::spawn(move || {
                 match extract_worker_thread(
                     name.as_str(), ctarget.as_str(), &loc_compress, prio, plan
                 ) {
                     Err(e) => {
-                        error!("Error from spawned thread: '{}'", e);
+                        error!("Error from spawned 'extract' thread: '{}'", e);
                         // No more work due to error => terminate pipes
                         Err(e)
                     },
@@ -389,7 +503,7 @@ pub fn extract(
     }
 
     info!(" ... waiting for workers to finish ...");
-    for h in handles {
+    for h in extract_handles {
         h.join().unwrap_or_else( |err| {
             warn!("Failed thread join: '{:?}'", err);
             Ok(())

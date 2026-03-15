@@ -131,6 +131,45 @@ fn collect_expected<T: Clone>(
     return items;
 }
 
+/// Blocking data collection of an unknown number of elements. This function
+/// will block until we completed semaphore is set to 'true'.
+fn collect_until_finished<T: Clone>(
+            #[cfg(feature = "std")]
+            rx: &Arc<Mutex<Receiver<T>>>,
+            #[cfg(not(feature = "std"))]
+            rx: &Receiver<T>,
+            completed: &Arc<Mutex<bool>>,
+            wait: Duration
+        ) -> Vec<T> {
+    let mut items: Vec<T> = Vec::new();
+    let mut ct_recv = 0;
+    loop {
+        match rx.try_recv() {
+            Ok(result) => {
+                debug!("Received {}", ct_recv);
+                items.push(result);
+                ct_recv +=1;
+            }
+            Err(error) => {
+                // Wait for timeout error first => ensures that there are no
+                // more data in the pipe
+                debug!(
+                    "recv_timeout failed with: '{}', checking for completion",
+                    error
+                );
+                if check_mutex::<bool, ArchiverError<T>>(completed, true) {
+                    debug!(
+                        "Received signal that channel has been completed"
+                    );
+                    break;
+                }
+                thread::sleep(wait);
+            }
+        }
+    }
+    return items;
+}
+
 #[derive(Debug, Clone)]
 pub struct Pipe<T> where T: Clone{
     pub tx: Sender<T>,
@@ -181,6 +220,12 @@ impl<T: Clone> Pipe<T> {
     pub fn collect_expected(&self, ct_expect: usize) -> Vec<T> {
         return collect_expected(
             ct_expect, &self.rx, &self.completed, Duration::from_millis(4000)
+        );
+    }
+
+    pub fn collect_until_finished(&self) -> Vec<T> {
+        return collect_until_finished(
+            &self.rx, &self.completed, Duration::from_millis(4000)
         );
     }
 }

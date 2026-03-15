@@ -3,6 +3,8 @@ use std::io;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::collections::HashMap;
+// Logging
+use log::{debug};
 
 /// Analyze an input path string.
 ///
@@ -100,17 +102,19 @@ fn lexical_normalize(path: &Path) -> PathBuf {
 
 #[derive(Clone, Copy, Debug)]
 pub struct DirMode {
+    #[cfg(unix)]
     mode: u32,
+    #[cfg(windows)]
+    readonly: bool,
     // deterministic conflict resolution if multiple tars set the same dir
-    priority: usize, 
+    priority: usize,
 }
 
 #[derive(Default, Debug)]
 pub struct DirPlan {
-    // Final directory mode requested by explained tar entries.
-    desired: HashMap<PathBuf, DirMode>,
     // Original mode for dirs we temporarily chmod'd to be writable.
-    original: HashMap<PathBuf, u32>,
+    original: HashMap<PathBuf, DirMode>,
+    pub dir_lock: HashMap<PathBuf, bool>
 }
 
 /// Sanitize like tar::Entry::unpack_in does:
@@ -129,83 +133,109 @@ pub fn sanitize_rel_path(path: &Path) -> Option<PathBuf> {
 }
 
 #[cfg(unix)]
-pub fn ensure_owner_writable(dir: &Path, plan: &mut DirPlan) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
+pub fn ensure_owner_writable(
+            plan: &mut DirPlan, dir: &Path, mode: u32, priority: usize
+        ) -> io::Result<()> {
+    // use std::os::unix::fs::PermissionsExt;
 
-    let meta = fs::symlink_metadata(dir)?;
-    if !meta.is_dir() {
-        return Ok(());
-    }
+    // let meta = fs::symlink_metadata(dir)?;
+    // if !meta.is_dir() {
+    //     return Ok(());
+    // }
 
-    let mode = meta.permissions().mode();
+    // let mode = meta.permissions().mode();
 
     // Need write+execute on a directory to create entries inside it.
     let need_bits = 0o300;
     if (mode & need_bits) != need_bits {
-        plan.original.entry(dir.to_path_buf()).or_insert(mode);
-        fs::set_permissions(dir, fs::Permissions::from_mode(mode | need_bits))?;
+        match plan.original.get(&dir.to_path_buf()) {
+            Some(existing) if existing.priority > priority => {
+                debug!(
+                    "Destination path '{}[{}, {}]' already processed",
+                    dir.to_string_lossy(), existing.mode, mode
+                );
+                return Ok(());
+            }
+            _ => {
+                debug!(
+                    "Altering mode for '{}': '{}' => '{}'",
+                    dir.to_string_lossy(), mode, mode | need_bits
+                );
+                plan.original.insert(
+                    dir.to_path_buf(), DirMode { mode, priority }
+                );
+            }
+        }
+        // debug!("hio");
+        // fs::set_permissions(dir, fs::Permissions::from_mode(mode | need_bits))?;
     }
     Ok(())
 }
 
 #[cfg(windows)]
-pub fn ensure_owner_writable(dir: &Path, _plan: &mut DirPlan) -> io::Result<()> {
+pub fn ensure_owner_writable(
+            plan: &mut DirPlan, dir: &Path, mode: u32, priority: usize
+        ) -> io::Result<()> {
     // Windows doesn't use POSIX modes; "read-only" is a flag.
     let meta = fs::metadata(dir)?;
     if !meta.is_dir() {
         return Ok(());
     }
-    let mut perm = meta.permissions();
-    if perm.readonly() {
-        perm.set_readonly(false);
-        fs::set_permissions(dir, perm)?;
+    // let mut perm = meta.permissions();
+    // if perm.readonly() {
+    if (mode & 0o222) == 0 {
+        match plan.original.get(&dir.to_path_buf()) {
+            Some(existing) if existing.priority > priority => {
+                debug!(
+                    "Destination path '{}[{}, {}]' already processed",
+                    dir.to_string_lossy(), existing.readonly, readonly
+                );
+                return Ok(());
+            }
+            _ => {
+                plan.original.insert(
+                    dir.to_path_buf(), 
+                    DirMode { readonly:true, priority:priority }
+                );
+            }
+        }
+        // perm.set_readonly(false);
+        // fs::set_permissions(dir, perm)?;
     }
     Ok(())
 }
 
-pub fn record_desired_dir_mode(
-            plan: &mut DirPlan, dir: PathBuf, mode: u32, priority: usize
-        ) {
-    // Deterministic: highest priority wins (priority can be index in input list).
-    match plan.desired.get(&dir) {
-        Some(existing) if existing.priority > priority => {}
-        _ => {
-            plan.desired.insert(dir, DirMode { mode, priority });
+#[cfg(unix)]
+pub fn finalize_directory_permissions(plan: DirPlan) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    // Apply final perms deepest-first (deepest first because can't alter child
+    // perms if parent is RO).
+    let mut dirs: Vec<PathBuf> = plan.original.keys().cloned().collect();
+    dirs.sort_by_key(|p| std::cmp::Reverse(p.components().count()));
+    dirs.dedup();
+
+    for dir in dirs {
+        if let Some(spec) = plan.original.get(&dir) {
+            fs::set_permissions( &dir, fs::Permissions::from_mode(spec.mode))?;
         }
     }
+
+    Ok(())
 }
 
+#[cfg(windows)]
 pub fn finalize_directory_permissions(plan: DirPlan) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
+    // Apply final perms deepest-first (deepest first because can't alter child
+    // perms if parent is RO).
+    let mut dirs: Vec<PathBuf> = plan.original.keys().cloned().collect();
+    dirs.sort_by_key(|p| std::cmp::Reverse(p.components().count()));
+    dirs.dedup();
 
-        // Apply final perms deepest-first.
-        let mut dirs: Vec<PathBuf> = plan.desired.keys().cloned().collect();
-        dirs.sort_by_key(|p| std::cmp::Reverse(p.components().count()));
-        dirs.dedup();
-
-        for dir in dirs {
-            if let Some(spec) = plan.desired.get(&dir) {
-                fs::set_permissions(&dir, fs::Permissions::from_mode(spec.mode))?;
-            }
-        }
-
-        // Restore dirs we temporarily chmod'd, unless overridden by a desired mode.
-        for (dir, orig_mode) in plan.original {
-            if !plan.desired.contains_key(&dir) {
-                fs::set_permissions(&dir, fs::Permissions::from_mode(orig_mode))?;
-            }
-        }
-    }
-
-    #[cfg(windows)]
-    {
-        // Emulate tar crate behavior: mark readonly if no owner-write bit.
-        for (dir, spec) in plan.desired {
-            let readonly = (spec.mode & 0o200) == 0;
+    for dir in dirs {
+        if let Some(spec) = plan.original.get(&dir) {
             let mut perm = fs::metadata(&dir)?.permissions();
-            perm.set_readonly(readonly);
+            perm.set_readonly(spec.readonly);
             fs::set_permissions(&dir, perm)?;
         }
     }
