@@ -131,7 +131,8 @@ The default log level is `info` -- if you would like more information, then set:
    See: `LICENSE-AGPL` (and/or `LICENSE`)
 
 2. **Commercial License**: A separate commercial license is available from
-   Johannes Blaschke See: `COMMERCIAL.md`
+   Johannes Blaschke without the conditions of the GNU Affero GPL.
+   See: `COMMERCIAL.md`
 
 If you do not have a commercial license agreement with Johannes Blaschke, your
 use of this project is governed by the **AGPL-3.0-or-later**.
