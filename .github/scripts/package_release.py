@@ -161,7 +161,7 @@ def main() -> None:
         )
 
     # Optional docs
-    for fn in ("README.md", "README.txt", "LICENSE", "LICENSE.md", "COPYING"):
+    for fn in ("README.md", "README.txt", "LICENSE", "LICENSE.md", "COPYING". "CLA.md", "COMMERCIA.md"):
         copy_if_exists(pathlib.Path(fn), dist)
 
     archive = pathlib.Path(f"{out_name}.{args.archive_ext}")
