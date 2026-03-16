@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 use crate::index::serialize::{DataFmt, load_tree};
 use crate::index::tree::NodeType;
 use crate::files::path::analyze_path;
