@@ -1,0 +1,97 @@
+name: Python integration tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12"]
+
+    steps:
+      # ------------------------------------------------------------------
+      # 1. Checkout
+      # ------------------------------------------------------------------
+      - uses: actions/checkout@v4
+
+      # ------------------------------------------------------------------
+      # 2. Set up Rust toolchain + build cache
+      # ------------------------------------------------------------------
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      # ------------------------------------------------------------------
+      # 3. Build parallel-idx (release, for speed)
+      # ------------------------------------------------------------------
+      - name: Build parallel-idx
+        run: cargo build --release
+
+      - name: Verify binary exists
+        run: |
+          ls -la target/release/parallel-idx
+          target/release/parallel-idx --help
+
+      # ------------------------------------------------------------------
+      # 4. Set up Python + uv
+      # ------------------------------------------------------------------
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      # ------------------------------------------------------------------
+      # 5. Install Python dependencies
+      # ------------------------------------------------------------------
+      - name: Install Python package
+        working-directory: python
+        run: uv sync --extra dev
+
+      # ------------------------------------------------------------------
+      # 6. Generate test fixtures using the real binary
+      # ------------------------------------------------------------------
+      - name: Generate test fixtures
+        run: |
+          chmod +x python/tests/fixtures/generate_fixtures.sh
+          bash python/tests/fixtures/generate_fixtures.sh target/release/parallel-idx
+
+      - name: Show fixture contents
+        run: |
+          echo "=== Fixture files ==="
+          ls -la python/tests/fixtures/
+          echo ""
+          echo "=== Manifest ==="
+          cat python/tests/fixtures/manifest.txt
+          echo ""
+          echo "=== Sample tree ==="
+          find python/tests/fixtures/sample_tree -type f | sort
+
+      # ------------------------------------------------------------------
+      # 7. Run all tests (unit + integration)
+      # ------------------------------------------------------------------
+      - name: Run tests
+        working-directory: python
+        run: uv run pytest -v --tb=short
+
+      # ------------------------------------------------------------------
+      # 8. Lint (optional, non-blocking)
+      # ------------------------------------------------------------------
+      - name: Lint with ruff
+        working-directory: python
+        run: uv run ruff check src/ tests/
+        continue-on-error: true
