@@ -1,10 +1,27 @@
 [project]
 name = "ptar-index"
-version = "0.1.0"
+version = "1.0.0"
 description = "Python interface for parallel-tar (.etr / .idx) index files"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
+authors = [
+    { name = "Johannes Blaschke", email = "johannes@blaschke.science" },
+]
+keywords = ["tar", "parallel", "archive", "index", "msgpack"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Archiving",
+    "Topic :: System :: Filesystems",
+]
 dependencies = [
     "msgpack>=1.0",
 ]
@@ -18,6 +35,12 @@ dev = [
 
 [project.scripts]
 ptar-index = "ptar_index:_cli"
+
+[project.urls]
+Homepage = "https://github.com/JBlaschke/parallel-tar"
+Repository = "https://github.com/JBlaschke/parallel-tar"
+Issues = "https://github.com/JBlaschke/parallel-tar/issues"
+Documentation = "https://github.com/JBlaschke/parallel-tar/tree/main/python"
 
 [build-system]
 requires = ["hatchling"]

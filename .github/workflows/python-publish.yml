@@ -1,0 +1,93 @@
+name: Publish Python package to PyPI
+
+on:
+  push:
+    tags:
+      - "python-v*"
+
+  # Allow manual trigger for testing
+  workflow_dispatch:
+
+jobs:
+  # ---------------------------------------------------------------
+  # 1. Run tests first — don't publish a broken package
+  # ---------------------------------------------------------------
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Build parallel-idx
+        run: cargo build --release
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v4
+
+      - name: Install and test
+        working-directory: python
+        run: |
+          uv sync --extra dev
+          chmod +x tests/fixtures/generate_fixtures.sh
+          bash tests/fixtures/generate_fixtures.sh ../target/release/parallel-idx
+          uv run pytest -v
+
+  # ---------------------------------------------------------------
+  # 2. Build the distribution
+  # ---------------------------------------------------------------
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v4
+
+      - name: Build sdist and wheel
+        working-directory: python
+        run: uv build
+
+      - name: Upload distribution artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: python/dist/
+
+  # ---------------------------------------------------------------
+  # 3. Publish to PyPI
+  # ---------------------------------------------------------------
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write  # required for trusted publishing
+
+    steps:
+      - name: Download distribution artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
