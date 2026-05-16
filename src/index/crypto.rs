@@ -14,22 +14,31 @@ use log::warn;
 // Used for parallel processing
 use rayon::prelude::*;
 
-fn hash_file_md5(path: &Path) -> std::io::Result<String> {
-    let file = File::open(path)?;
-    let mut reader = BufReader::new(file);
-    let mut context = md5::Context::new();
 
-    // TODO: buffer size could be a setting -- right now we are using a
-    // hard-coded 1MiB
-    let mut buffer = [0u8; 1048576];
+pub fn hash_reader_md5<R: Read>(mut r: R) -> std::io::Result<String> {
+    let mut ctx = md5::Context::new();
+    let mut buf = [0u8; 1048576];
     loop {
-        let bytes_read = reader.read(&mut buffer)?;
-        if bytes_read == 0 { break; }
-        context.consume(&buffer[..bytes_read]);
+        let n = r.read(&mut buf)?;
+        if n == 0 { break; }
+        ctx.consume(&buf[..n]);
     }
+    Ok(format!("{:x}", ctx.finalize()))
+}
 
-    // Ok(format!("{:x}", hasher.finalize()))
-    Ok(format!("{:x}", context.finalize()))
+pub fn hash_reader_sha256<R: Read>(mut r: R) -> std::io::Result<String> {
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 1048576];
+    loop {
+        let n = r.read(&mut buf)?;
+        if n == 0 { break; }
+        hasher.update(&buf[..n]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn hash_file_md5(path: &Path) -> std::io::Result<String> {
+    hash_reader_md5(BufReader::new(File::open(path)?))
 }
 
 fn hash_string_md5(s: &str) -> String {
@@ -37,20 +46,7 @@ fn hash_string_md5(s: &str) -> String {
 }
 
 fn hash_file_sha256(path: &Path) -> std::io::Result<String> {
-    let file = File::open(path)?;
-    let mut reader = BufReader::new(file);
-    let mut hasher = Sha256::new();
-
-    // TODO: buffer size could be a setting -- right now we are using a
-    // hard-coded 1MiB
-    let mut buffer = [0u8; 1048576];
-    loop {
-        let bytes_read = reader.read(&mut buffer)?;
-        if bytes_read == 0 { break; }
-        hasher.update(&buffer[..bytes_read]);
-    }
-
-    Ok(format!("{:x}", hasher.finalize()))
+    hash_reader_sha256(BufReader::new(File::open(path)?))
 }
 
 fn hash_string_sha256(s: &str) -> String {
