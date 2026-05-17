@@ -1,12 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Filesystem-related error types (imported elsewhere)
 use crate::archive::mutex::{TryRecvError, RecvTimeoutError, SendError};
 
-// Stdlib
 use std::fmt;
 use std::sync::Arc;
 use std::error::Error;
-// Filesystem-related error types
 use walkdir::Error as WdError;
 
 #[derive(Debug, Clone)]
@@ -44,39 +41,27 @@ impl<T: std::fmt::Debug + Clone> Error for ArchiverError<T> {
 }
 
 impl<T: Clone> From<std::io::Error> for ArchiverError<T> {
-    fn from(e: std::io::Error) -> Self {
-        Self::Io(e.into())
-    }
+    fn from(e: std::io::Error) -> Self { Self::Io(e.into()) }
 }
 
 impl<T: Clone> From<WdError> for ArchiverError<T> {
-    fn from(e: WdError) -> Self {
-        Self::WalkdirError(e.into())
-    }
+    fn from(e: WdError) -> Self { Self::WalkdirError(e.into()) }
 }
 
 impl<T, S: Clone> From<std::sync::PoisonError<T>> for ArchiverError<S> {
-    fn from(_: std::sync::PoisonError<T>) -> Self {
-        ArchiverError::LockPoisoned
-    }
+    fn from(_: std::sync::PoisonError<T>) -> Self { ArchiverError::LockPoisoned }
 }
 
 impl<T: Clone> From<TryRecvError> for ArchiverError<T> {
-    fn from(e: TryRecvError) -> Self {
-        Self::TryRecvError(e)
-    }
+    fn from(e: TryRecvError) -> Self { Self::TryRecvError(e) }
 }
 
 impl<T: Clone> From<RecvTimeoutError> for ArchiverError<T> {
-    fn from(e: RecvTimeoutError) -> Self {
-        Self::RecvTimeoutError(e)
-    }
+    fn from(e: RecvTimeoutError) -> Self { Self::RecvTimeoutError(e) }
 }
 
 impl<T: Clone> From<SendError<T>> for ArchiverError<T> {
-    fn from(e: SendError<T>) -> Self {
-        Self::SendError(e)
-    }
+    fn from(e: SendError<T>) -> Self { Self::SendError(e) }
 }
 
 type RTAET<T> = Result<T, ArchiverError<T>>;
@@ -84,10 +69,8 @@ type RTAET<T> = Result<T, ArchiverError<T>>;
 impl<T: Clone> From<SendError<RTAET<T>>> for ArchiverError<T> {
     fn from(SendError(msg): SendError<RTAET<T>>) -> Self {
         match msg {
-            // recover the original ArchiverError<T>
             Err(inner) => inner,
-            // receiver dropped while sending an Ok(_)
-            Ok(_) => ArchiverError::ChannelClosed, 
+            Ok(_) => ArchiverError::ChannelClosed,
         }
     }
 }
@@ -107,6 +90,35 @@ impl<T: Clone> From<ArchiverError<RTAET<T>>> for ArchiverError<T> {
             }
             ArchiverError::LockPoisoned => Self::LockPoisoned,
             ArchiverError::ChannelClosed => Self::ChannelClosed
+        }
+    }
+}
+
+// ─── Cross-payload conversion trait ──────────────────────────────────────
+//
+// Globally available like `From`, but does NOT collide with the std
+// reflexive `From<T> for T` because it's a different trait. The cost
+// is that `?` won't trigger it automatically — you need to call
+// `.relabel()` at the boundary. This is the closest we can get to
+// Option B on stable Rust.
+//
+// The blanket below covers EVERY pair of payload types, including
+// `T == S` (which is just an identity conversion through the match).
+
+pub trait Relabel<S: Clone> {
+    fn relabel(self) -> ArchiverError<S>;
+}
+
+impl<T: Clone, S: Clone> Relabel<S> for ArchiverError<T> {
+    fn relabel(self) -> ArchiverError<S> {
+        match self {
+            ArchiverError::Io(e)               => ArchiverError::Io(e),
+            ArchiverError::WalkdirError(e)     => ArchiverError::WalkdirError(e),
+            ArchiverError::TryRecvError(e)     => ArchiverError::TryRecvError(e),
+            ArchiverError::RecvTimeoutError(e) => ArchiverError::RecvTimeoutError(e),
+            ArchiverError::SendError(_)        => ArchiverError::ChannelClosed,
+            ArchiverError::LockPoisoned        => ArchiverError::LockPoisoned,
+            ArchiverError::ChannelClosed       => ArchiverError::ChannelClosed,
         }
     }
 }

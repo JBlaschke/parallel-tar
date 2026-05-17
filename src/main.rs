@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Clap
-use clap::{Arg, Command};
+use clap::{Arg, Command, value_parser};
 // Stdlib
 use std::error::Error;
+use std::path::{Path, PathBuf};
+// Logging
+use log::info;
 
 use ptar_lib::archive::tar::{create, extract};
 
@@ -45,7 +48,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             .short('c')
             .long("create")
             .help("Create an archive")
-            .required_unless_present("extract")
+            .required_unless_present_any(["verify","extract"])
             .num_args(0)
         )
         .arg(
@@ -53,7 +56,15 @@ fn main() -> Result<(), Box<dyn Error>> {
             .short('x')
             .long("extract")
             .help("Extract a list of archives")
-            .required_unless_present("create")
+            .required_unless_present_any(["create", "verify"])
+            .num_args(0)
+        )
+        .arg(
+            Arg::new("verify")
+            .short('i')
+            .long("verify")
+            .help("Verify the correctness of an archive by generating an index from its contents")
+            .required_unless_present_any(["create", "extract"])
             .num_args(0)
         )
         .arg(
@@ -88,6 +99,30 @@ fn main() -> Result<(), Box<dyn Error>> {
             .required(false)
             .num_args(0)
         )
+        .arg(
+            Arg::new("root")
+            .short('r')
+            .long("root")
+            .help("Optional root prefix to prepend to tar-relative paths")
+            .value_name("PATH")
+            .value_parser(value_parser!(PathBuf))
+        )
+        .arg(
+            Arg::new("json_fmt")
+            .short('j')
+            .long("json")
+            .help("Output index as JSON.")
+            .required(false)
+            .num_args(0)
+        )
+        .arg(
+            Arg::new("use_md5")
+            .short('m')
+            .long("md5")
+            .help("Use MD5 (instead of SHA256) to calculate checksums")
+            .required(false)
+            .num_args(0)
+        )
         .get_matches();
 
     fn get_arg<'a, T: Clone + Send + Sync + 'static>(
@@ -101,10 +136,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     let num_threads: &u32     = get_arg(&args, "num_threads")?;
     let create_mode: &bool    = get_arg(&args, "create")?;
     let extract_mode: &bool   = get_arg(&args, "extract")?;
+    let verify_mode: &bool    = get_arg(&args, "verify")?;
     let follow_links: &bool   = get_arg(&args, "follow_links")?;
     let from_tree: &bool      = get_arg(&args, "from_tree")?;
     let json_fmt: &bool       = get_arg(&args, "json_fmt")?;
     let compress: &bool       = get_arg(&args, "compress")?;
+    let use_md5: &bool        = get_arg(&args, "use_md5")?;
+
+    let root:    Option<&PathBuf> = args.get_one::<PathBuf>("root");
 
     if *create_mode {
         create(
@@ -113,6 +152,32 @@ fn main() -> Result<(), Box<dyn Error>> {
         )?;
     } else if *extract_mode {
         extract(archive_name, target, num_threads, compress)?;
+    } else if *verify_mode {
+        use ptar_lib::archive::verify::verify;
+        use ptar_lib::index::serialize::{save_tree, DataFmt};
+        use ptar_lib::index::HashedNodes;            // for compute_hashes
+
+        let root_path: Option<&Path> = root.map(|p| p.as_path());
+
+        let tree = verify(
+            target, num_threads, compress, use_md5, root_path,
+        )?;
+
+        // metadata is uncomputed; root hash should be computed once.
+        tree.compute_metadata()?;
+        // File hashes are pre-filled from the tar stream; this only fills in
+        // the directory hashes (via the children-concat algorithm).
+        let root_hash = tree.compute_hashes(*use_md5)?;
+        info!("Root hash: '{}'", root_hash);
+
+        let fmt = if *json_fmt {
+            DataFmt::Json(archive_name.to_string())
+        } else {
+            DataFmt::Idx(archive_name.to_string())
+        };
+        info!("Saving index: '{:?}'", fmt);
+        save_tree(&tree, fmt)?;
+        return Ok(());
     }
 
     Ok(())
