@@ -1,6 +1,6 @@
 [package]
 name = "parallel-tar"
-version = "3.4.0"
+version = "3.5.0"
 edition = "2024"
 license = "AGPL-3.0-or-later"
 
@@ -35,6 +35,10 @@ path = "src/indexer.rs"
 [[bin]]
 name = "view-idx"
 path = "src/viewer.rs"
+
+[[bin]]
+name = "diff-idx"
+path = "src/differ.rs"
 
 [features]
 std = []

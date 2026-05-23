@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Clap
-use clap::{Arg, Command, value_parser};
+use clap::{Arg, ArgGroup, Command, value_parser};
 // Stdlib
 use std::error::Error;
 use std::path::{Path, PathBuf};
@@ -35,13 +35,27 @@ fn main() -> Result<(), Box<dyn Error>> {
             .num_args(0),
         )
         .arg(
+            Arg::new("verify")
+            .short('i')
+            .long("verify")
+            .help("Verify the correctness of an archive by generating an index from its contents")
+            .required_unless_present_any(["create", "extract"])
+            .num_args(0)
+        )
+        .group(
+            ArgGroup::new("json_context")
+                .args(["from_tree", "verify"])
+                .multiple(true)     // allow both at once if that makes sense
+                .required(false),   // group only enforced via `requires` below
+        )
+        .arg(
             Arg::new("json_fmt")
             .short('j')
             .long("json")
-            .help("Input index as JSON.")
+            .help("Input/output index as JSON.")
             .required(false)
             .num_args(0)
-            .requires("from_tree")
+            .requires("json_context")   // satisfied by from_tree OR verify
         )
         .arg(
             Arg::new("create")
@@ -57,14 +71,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             .long("extract")
             .help("Extract a list of archives")
             .required_unless_present_any(["create", "verify"])
-            .num_args(0)
-        )
-        .arg(
-            Arg::new("verify")
-            .short('i')
-            .long("verify")
-            .help("Verify the correctness of an archive by generating an index from its contents")
-            .required_unless_present_any(["create", "extract"])
             .num_args(0)
         )
         .arg(
@@ -106,14 +112,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             .help("Optional root prefix to prepend to tar-relative paths")
             .value_name("PATH")
             .value_parser(value_parser!(PathBuf))
-        )
-        .arg(
-            Arg::new("json_fmt")
-            .short('j')
-            .long("json")
-            .help("Output index as JSON.")
-            .required(false)
-            .num_args(0)
         )
         .arg(
             Arg::new("use_md5")
