@@ -21,3 +21,6 @@ pub use fs::Filesystem;
 // cryptographic functions for computing hashes
 pub mod crypto;
 pub use crypto::HashedNodes;
+
+// path utils for indexer
+pub mod path;

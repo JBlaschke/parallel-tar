@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use std::error::Error;
-use std::path::{Component, Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::{Arg, ArgAction, Command};
@@ -8,6 +8,8 @@ use clap::{Arg, ArgAction, Command};
 use ptar_lib::index::tree::{TreeNode, NodeType};
 use ptar_lib::index::serialize::{DataFmt, load_tree};
 use ptar_lib::index::display::format_size;
+
+use ptar_lib::index::path::resolve;
 
 // ─── ANSI helpers ────────────────────────────────────────────────────────
 //
@@ -22,33 +24,6 @@ const C_RESET: &str = "\x1b[0m";
 
 fn paint(text: &str, color: &str) -> String {
     format!("{}{}{}", color, text, C_RESET)
-}
-
-// ─── Path resolution ─────────────────────────────────────────────────────
-//
-// We resolve the user-supplied "path/to/child" against both trees by
-// walking child names. This is independent of whether the .idx stored
-// absolute or relative paths, which is the right behavior for diffing
-// indexes built in different contexts (e.g. a live-tree .idx vs a
-// verify .idx without --root).
-
-fn resolve_by_name(root: &Arc<TreeNode>, rel: &Path) -> Option<Arc<TreeNode>> {
-    let mut cur = Arc::clone(root);
-    for component in rel.components() {
-        let name = match component {
-            Component::Normal(s) => s.to_string_lossy().into_owned(),
-            // Ignore "./" and absolute prefixes; treat ".." as a hard no.
-            Component::CurDir => continue,
-            Component::RootDir | Component::Prefix(_) => continue,
-            Component::ParentDir => return None,
-        };
-        let next = cur.children().iter().find(|c| c.name == name).cloned();
-        match next {
-            Some(n) => cur = n,
-            None    => return None,
-        }
-    }
-    Some(cur)
 }
 
 // ─── Row rendering (single level) ────────────────────────────────────────
@@ -289,10 +264,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         None => (left_tree.clone(), right_tree.clone()),
         Some(p) => {
             let rel = PathBuf::from(p);
-            let l = resolve_by_name(&left_tree, &rel).ok_or_else(|| {
+            let l = resolve(&left_tree, &rel).ok_or_else(|| {
                 format!("path {:?} not found in LEFT tree", rel)
             })?;
-            let r = resolve_by_name(&right_tree, &rel).ok_or_else(|| {
+            let r = resolve(&right_tree, &rel).ok_or_else(|| {
                 format!("path {:?} not found in RIGHT tree", rel)
             })?;
             (l, r)
