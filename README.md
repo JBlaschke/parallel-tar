@@ -280,6 +280,126 @@ $ diff-idx example.idx example.verify.idx -p data/LCLS/sit_psdm_data
 > `data/LCLS`. If a path can't be resolved on either side, `diff-idx` errors
 > out rather than silently diffing partial trees.
 
+### Edit an index with `edit-idx`
+
+When `diff-idx` shows you a discrepancy — or when you want to assemble a new
+index from existing pieces — `edit-idx` lets you remove subtrees and splice in
+subtrees from other indexes. Every edit triggers a recompute of the affected
+ancestors' metadata and hashes, so the resulting index is self-consistent and
+its root hash reflects the new contents.
+
+Two subcommands are available: `rm` and `add`. Both require `-o` to write to a
+new file; `edit-idx` never modifies its input in place.
+
+>[!IMPORTANT]
+> Paths passed to `edit-idx` are matched by **child name** segments (same
+> convention as `diff-idx`), not by the stored absolute path. So `data/LCLS`
+> works whether the index was built from `/global/projects/data/LCLS` or just
+> `data/LCLS`.
+
+#### Removing a subtree
+
+Use `rm` to drop a node and everything beneath it. The recompute pass updates
+every ancestor's hash and metadata back to the root, so the resulting index
+correctly reflects "this stuff was never there."
+
+```
+$ edit-idx rm -f example.idx -p data/LCLS/sit_psdm_data -o example.trimmed.idx
+[INFO  edit_idx] Loading: Idx("example.idx")
+[INFO  edit_idx] Removing "data/LCLS/sit_psdm_data" (and its subtree) from index
+[INFO  edit_idx] Recomputing metadata ...
+[INFO  edit_idx] Recomputing hashes ...
+[INFO  edit_idx] New root hash: 'f3a9c2e1...'
+[INFO  edit_idx] Saving: Idx("example.trimmed.idx")
+```
+
+Common use cases:
+
+* Removing test artifacts or scratch directories from a "publish" index without
+  rebuilding from the live tree.
+* Trimming a corrupted subtree so the rest of the index still verifies against
+  an archive.
+
+#### Inserting a subtree
+
+Use `add` to splice a subtree from one index into another. The required flags
+are `-s` (source index), `--at` (destination parent path), and `-o` (output).
+Optionally, `--from` selects a specific subtree from the source — without it,
+the source's root node is inserted whole.
+
+The inserted subtree's `path` fields are rewritten to reflect their new
+location in the destination tree, so the resulting index round-trips cleanly
+through `view-idx` and `diff-idx`. File content hashes are preserved (they're
+path-independent); directory hashes are recomputed as part of the same pass
+that updates the destination's ancestors.
+
+**Insert a whole source index as a new subtree:**
+
+```
+$ edit-idx add -f base.idx -s overlay.idx --at data/LCLS -o combined.idx
+[INFO  edit_idx] Loading destination: Idx("base.idx")
+[INFO  edit_idx] Loading source:      Idx("overlay.idx")
+[INFO  edit_idx] Inserting subtree "overlay" under "data/LCLS" (new path: "data/LCLS/overlay")
+[INFO  edit_idx] Recomputing metadata ...
+[INFO  edit_idx] Recomputing hashes ...
+[INFO  edit_idx] New root hash: 'b7c2a849...'
+[INFO  edit_idx] Saving: Idx("combined.idx")
+```
+
+The source's root node (here, `overlay`) becomes the new child's name under the
+destination parent.
+
+**Insert just one subtree out of a larger source index:**
+
+```
+$ edit-idx add \
+    -f base.idx \
+    -s overlay.idx \
+    --from data/LCLS/sit_psdm_data \
+    --at data/LCLS \
+    -o combined.idx
+```
+
+This pulls `sit_psdm_data` out of `overlay.idx`'s tree and inserts it under
+`data/LCLS` in `base.idx`. The new child is named after the sub-node you
+selected (`sit_psdm_data`), not after the source's root.
+
+>[!TIP]
+> If the destination already has a child with the same name as what you're
+> inserting, `edit-idx add` errors out — by design. To replace an existing
+> subtree, chain the edits:
+>
+> ```
+> $ edit-idx rm  -f base.idx -p data/LCLS/sit_psdm_data -o tmp.idx
+> $ edit-idx add -f tmp.idx -s overlay.idx --from data/LCLS/sit_psdm_data --at data/LCLS -o combined.idx
+> $ rm tmp.idx
+> ```
+
+#### Hashes and metadata after edits
+
+Both subcommands recompute hashes and metadata (size, file count, directory
+count) for every ancestor of the edit point, from the modified node up to the
+root. Unchanged subtrees keep their cached values, so edits on deeply-nested
+paths are cheap — only the edit path and the children of each modified
+directory get rehashed.
+
+If you want to verify an edit didn't quietly break anything, follow up with
+`diff-idx` against the original:
+
+```
+$ diff-idx example.idx example.trimmed.idx -p data/LCLS
+```
+
+The diff should show `sit_psdm_data` present on the left, blank on the right,
+and all other children matching in green.
+
+#### Format support
+
+`edit-idx` accepts and produces both `.idx` (msgpack) and `.json` — pass `-j`
+if your input *and* output are JSON. The `--md5` flag switches the recompute
+pass to MD5 instead of SHA-256; use this if your original index was built with
+`parallel-idx --md5` to keep the hash algorithm consistent across edits.
+
 ## Logging
 
 The default log level is `info` -- if you would like more information, then
