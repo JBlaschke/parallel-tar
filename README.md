@@ -226,6 +226,107 @@ generated from the live tree — the archive is byte-for-byte sound.
 > Without `-r`, paths in the verify `.idx` will be tar-relative, which is still
 > a valid index — root-hash comparison works either way.
 
+### Inspecting an index with `view-idx`
+
+`view-idx` loads a `.idx`, `.etr`, or `.json` index and prints a summary plus a
+tree view. It's the natural first stop after building an index — it shows you
+root hash, file/dir counts, total size, and the structure of what was indexed.
+
+```
+$ view-idx -f example.idx
+Loading index at: 'Idx("example.idx")'
+Done loading!
+
+--- Index Metadata -------------------------------------------
+Source file: example.idx
+Root path:   /global/projects/data
+Root name:   data
+Root hash:   2ad978a95789be738d31cd9eac89519957f35d2f730a346c715e05f3355e70ab
+Contents:    4821995 files, 417285 directories, 1689.34 GB total
+--------------------------------------------------------------
+
+└── 📁 data (1689.34 GB, 2ad978a95789be73)
+    ├── 📁 LCLS (616.24 GB, 80518e7e6b82b455)
+    │   ├── 📄 lw61.tar (306.68 GB, 95a67d4393e26c08)
+    │   └── 📁 sit_psdm_data (306.68 GB, 0795fcc66957484a)
+    │       └── 📁 psdm (306.68 GB, c2b44466a502697a)
+    │           └── ...
+    └── ...
+
+--- Largest Entries ------------------------------------------
+0: /global/projects/data is 4821995 files + 417285 dirs (1689.34 GB, 2ad978a95789be73)
+1: /global/projects/data/LCLS is 333 files + 164 dirs (616.24 GB, 80518e7e6b82b455)
+2: /global/projects/data/LCLS/lw61.tar is 1 files + 0 dirs (306.68 GB, 95a67d4393e26c08)
+3: /global/projects/data/LCLS/sit_psdm_data is 117 files + 18 dirs (306.68 GB, 0795fcc66957484a)
+4: /global/projects/data/LCLS/sit_psdm_data/psdm is 117 files + 17 dirs (306.68 GB, c2b44466a502697a)
+--------------------------------------------------------------
+```
+
+For trees with thousands of files this output gets very long. Two flags control
+how much is shown:
+
+#### Limiting depth with `-L`
+
+`-L` (or `--level`) caps how many levels of the tree are printed below the
+current node. `-L 0` prints only the root row with an ellipsis marker if
+children exist; `-L 2` prints the root plus two levels under it, and so on.
+
+```
+$ view-idx -f example.idx -L 2
+... (metadata block) ...
+
+└── 📁 data (1689.34 GB, 2ad978a95789be73)
+    ├── 📁 LCLS (616.24 GB, 80518e7e6b82b455)
+    │   ├── 📄 lw61.tar (306.68 GB, 95a67d4393e26c08)
+    │   └── 📁 sit_psdm_data (306.68 GB, 0795fcc66957484a)
+    │       └── … (1 entries hidden)
+    └── 📁 other (1073.10 GB, a1b2c3d4e5f60718)
+        └── … (243 entries hidden)
+```
+
+Truncated directories show `… (N entries hidden)` so you can tell "there's more
+below" from "this is actually a leaf."
+
+#### Focusing on a sub-path with `-p`
+
+`-p` (or `--path`) restricts the view to a particular subtree. Paths are
+matched by **child name** segments, same as `diff-idx` and `edit-idx` — so
+`data/LCLS` works whether the index was built with absolute or relative paths.
+
+```
+$ view-idx -f example.idx -p data/LCLS -L 1
+... (metadata block, showing 'Viewing: /global/projects/data/LCLS') ...
+
+└── 📁 LCLS (616.24 GB, 80518e7e6b82b455)
+    ├── 📄 lw61.tar (306.68 GB, 95a67d4393e26c08)
+    └── 📁 sit_psdm_data (306.68 GB, 0795fcc66957484a)
+        └── … (1 entries hidden)
+```
+
+When `-p` is used, the metadata block adds a `Viewing:` line showing which
+subtree is being inspected, and the `Root hash:` shown is the **subtree's**
+hash — not the whole-index root hash. This is the value you'd use to compare
+with `diff-idx` output, or to verify a specific subtree against another index.
+
+The "Largest Entries" section at the bottom is also scoped to the subtree, so
+you can use it to find the biggest items under whichever node you're focused
+on.
+
+>[!TIP]
+> Combining `-L` and `-p` makes browsing huge indexes much more pleasant:
+>
+> ```
+> $ view-idx -f example.idx -L 1            # quick top-level overview
+> $ view-idx -f example.idx -p data -L 2    # zoom into 'data'
+> $ view-idx -f example.idx -p data/LCLS/sit_psdm_data -L 3   # deeper
+> ```
+
+#### Format support
+
+`view-idx` accepts both `.idx` (msgpack) and `.json` indexes — pass `-j` for
+JSON. The empty-tree `.etr` files produced by `parallel-idx -e` are valid
+`.idx` files and work without any extra flags.
+
 ### Compare two indexes with `diff-idx`
 
 When two indexes' root hashes don't match, `diff-idx` shows you where they

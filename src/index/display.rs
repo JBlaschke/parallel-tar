@@ -5,11 +5,21 @@ use std::sync::Arc;
 
 pub trait Display {
     fn print_tree(self: &Arc<Self>, prefix: &str, is_last: bool);
+    fn print_tree_depth(self: &Arc<Self>, prefix: &str, is_last: bool, max_depth: usize);
 }
 
 impl Display for TreeNode {
-    /// Pretty print the tree with computed sizes
+    /// Pretty print the tree with no depth limit (backward-compatible).
     fn print_tree(self: &Arc<Self>, prefix: &str, is_last: bool) {
+        self.print_tree_depth(prefix, is_last, usize::MAX);
+    }
+
+    /// Pretty print the tree, descending at most `max_depth` levels below
+    /// the current node. `max_depth == 0` prints only this node and
+    /// suppresses its children entirely. If children exist but are
+    /// hidden by the depth limit, an ellipsis row is shown so users
+    /// know there's more underneath.
+    fn print_tree_depth(self: &Arc<Self>, prefix: &str, is_last: bool, max_depth: usize) {
         let connector = if is_last { "└── " } else { "├── " };
         let icon: String = match & self.node_type {
             NodeType::File { .. }        => "📄".to_string(),
@@ -35,8 +45,22 @@ impl Display for TreeNode {
             let new_prefix = format!(
                 "{}{}", prefix, if is_last { "    " } else { "│   " }
             );
+
+            if max_depth == 0 {
+                // Children exist but we're at the depth cap — show an
+                // ellipsis row so users know the listing is truncated.
+                if !children.is_empty() {
+                    println!("{}└── … ({} entries hidden)", new_prefix, children.len());
+                }
+                return;
+            }
+
             for (i, child) in children.iter().enumerate() {
-                child.print_tree(&new_prefix, i == children.len() - 1);
+                child.print_tree_depth(
+                    &new_prefix,
+                    i == children.len() - 1,
+                    max_depth - 1,
+                );
             }
         }
     }
