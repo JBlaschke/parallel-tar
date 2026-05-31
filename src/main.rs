@@ -165,8 +165,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         tree.compute_metadata()?;
         // File hashes are pre-filled from the tar stream; this only fills in
         // the directory hashes (via the children-concat algorithm).
-        let root_hash = tree.compute_hashes(*use_md5)?;
-        info!("Root hash: '{}'", root_hash);
+        match tree.compute_hashes(*use_md5)? {
+            Some(h) => info!("Root hash: '{}'", h),
+            None    => return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "verify produced an incomplete tree (some tar entries lacked hashes)",
+            ).into()),
+        }
 
         let fmt = if *json_fmt {
             DataFmt::Json(archive_name.to_string())

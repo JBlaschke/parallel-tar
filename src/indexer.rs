@@ -168,10 +168,19 @@ fn main() -> Result<(), Box<dyn Error>> {
     info!("Computing metadata ...");
     // Compute metadata bottom-up from leaves to root
     let meta = pool.install(|| {tree.compute_metadata()})?;
-    info!("Computing hashes ...");
-    // Compute hashes bottom-up from leaves to root
-    let hash = pool.install(|| {tree.compute_hashes(*use_md5)})?;
 
+    info!("Filling hashes ...");
+    // Compute file hashes 
+    let n_filled = pool.install(|| tree.fill_hashes(*use_md5))?;
+    info!("Hashed {} files from disk", n_filled);
+
+    info!("Computing hash tree ...");
+    // Compute hashes bottom-up from leaves to root
+    let hash = pool.install(|| {tree.compute_hashes(*use_md5)})?
+        .ok_or_else(|| std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "tree has unhashed files; index is incomplete",
+        ))?;
     // Display results
     info!(
         "Indexed: {} files, {} directories, {} total", 
