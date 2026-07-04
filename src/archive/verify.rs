@@ -75,11 +75,68 @@ fn scan_worker_thread(
             continue;
         };
 
-        let size = header.size().unwrap_or(0);
+        let mut size = header.size().unwrap_or(0);
 
         let (kind, hash) = match ent_type {
             EntryType::Directory => (ScannedKind::Directory, None),
-            EntryType::Regular | EntryType::Continuous => {
+            EntryType::Regular | EntryType::Continuous | EntryType::GNUSparse => {
+
+                if ent_type == EntryType::GNUSparse {
+                    // Old-GNU sparse member ('S'). Two things differ from a
+                    // Regular entry:
+                    //  1. header.size() is the *archived* (packed) byte
+                    //     count; the file's logical size is in the GNU
+                    //     header's realsize field. parallel-idx records
+                    //     the logical size (st_size), so use realsize.
+                    //  2. The data stream is packed segments — but tar-rs
+                    //     expands the holes as zeros through Entry's Read
+                    //     impl, so hashing the stream below yields the
+                    //     logical content, identical to hashing the file
+                    //     on disk.
+                    if let Some(g) = header.as_gnu() {
+                        match g.real_size() {
+                            Ok(rs) => size = rs,
+                            Err(e) => warn!(
+                                "sparse entry {:?}: could not parse realsize \
+                                 ({}); falling back to archived size",
+                                rel, e
+                            ),
+                        }
+                    } else {
+                        warn!(
+                            "sparse entry {:?}: no GNU header view; \
+                             falling back to archived size", rel
+                        );
+                    }
+                } else {
+                    // PAX-format sparse members (GNU tar --format=posix
+                    // --sparse) arrive as Regular entries whose data stream
+                    // is a sparse map followed by packed data — tar-rs does
+                    // NOT reconstruct these, so hashing the stream would
+                    // produce a confidently wrong hash. Verify means
+                    // verified: hard-error instead.
+                    if let Ok(Some(exts)) = entry.pax_extensions() {
+                        let pax_sparse = exts
+                            .filter_map(|e| e.ok())
+                            .any(|e| e.key()
+                                .map(|k| k.starts_with("GNU.sparse."))
+                                .unwrap_or(false));
+                        if pax_sparse {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                format!(
+                                    "entry {:?} in '{}' is a PAX-format \
+                                     sparse member, which cannot be hashed \
+                                     correctly from the stream; re-create \
+                                     the archive with --format=gnu, or \
+                                     extract and index from disk",
+                                    rel, tar_path
+                                ),
+                            ).into());
+                        }
+                    }
+                }
+
                 let h = if use_md5 {
                     hash_reader_md5(&mut entry)?
                 } else {
