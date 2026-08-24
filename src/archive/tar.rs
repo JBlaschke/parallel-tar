@@ -58,7 +58,7 @@ fn create_worker_thread(
                     let link_target = match read_link(& input) {
                         Ok(v) => v,
                         Err(e) => {
-                            pipe_results.input().send(Err(e.into()))?;
+                            pipe_results.send(Err(e.into()))?;
                             continue;
                         }
                     };
@@ -69,7 +69,7 @@ fn create_worker_thread(
                     ) {
                         Ok(_)  => (),
                         Err(e) => {
-                            pipe_results.input().send(Err(e.into()))?;
+                            pipe_results.send(Err(e.into()))?;
                             continue;
                         }
                     };
@@ -78,13 +78,13 @@ fn create_worker_thread(
                     match archive.append_path(input.clone()) {
                         Ok(_)  => (),
                         Err(e) => {
-                            pipe_results.input().send(Err(e.into()))?;
+                            pipe_results.send(Err(e.into()))?;
                             continue;
                         }
                     }
                 }
                 // Used to check work that has been done
-                pipe_results.input().send(Ok(input))?;
+                pipe_results.send(Ok(input))?;
             },
             Err(error) => {
                 // Check if work is done
@@ -140,7 +140,7 @@ fn scan_dirs_worker_thread(
         };
 
         let full_path = destination_path.join(&rel);
-        pipe_results.input().send(full_path.to_string_lossy().to_string())?;
+        pipe_results.send(full_path.to_string_lossy().to_string())?;
 
         if let Ok(mode) = entry.header().mode() {
             // Match tar crate default-ish: ignore suid/sgid/sticky unless you
@@ -204,7 +204,7 @@ pub fn create(
             json_fmt: &bool,
             compress: &bool
         ) -> Result<(), ArchiverError<String>> {
-    let pipe_work    = Pipe::<String>::new();
+    let mut pipe_work = Pipe::<String>::new();
     let pipe_results = Pipe::<Result<String, ArchiverError<String>>>::new();
 
     let mut tfiles: Vec<String> = Vec::new();
@@ -304,10 +304,14 @@ pub fn create(
     info!("Sending paths to workers. This will start the archiving files...");
     for work_item in & work_items {
         debug!("Requesting '{}' be archived", work_item);
-        pipe_work.tx.send(work_item.to_string()).unwrap_or_else( |err| {
+        pipe_work.send(work_item.to_string()).unwrap_or_else( |err| {
             warn!("Failed to process '{}', due to error: '{}'", work_item, err)
         });
     }
+    // All work has been submitted => close this (the producing) end of the
+    // work pipe. The workers hold their own clones, so the channel fully
+    // disconnects once they finish and drop theirs.
+    pipe_work.close();
 
     info!("Collecting worker status (workers are working) ...");
     let processed_items = pipe_results.collect_expected(work_items.len());
@@ -321,7 +325,6 @@ pub fn create(
         })?;
     }
     info!(" ... workers are done!");
-    pipe_work.close();
     pipe_results.set_completed()?;
 
     info!("FINALIZE: checking worker status.");
@@ -360,7 +363,7 @@ pub fn extract(
     // Spawn worker threads
     info!("SETUP for PHASE 1: Starting {} worker threads", num_threads);
 
-    let pipe_dirs = Pipe::<String>::new();
+    let mut pipe_dirs = Pipe::<String>::new();
     let mut scan_handles: Vec<
             JoinHandle<Result<(), ArchiverError<String>>>
         > = Vec::with_capacity(*num_threads as usize);
@@ -408,11 +411,14 @@ pub fn extract(
     }
     info!(" ... workers are done scanning directories!");
     pipe_dirs.set_completed()?;
+    // The workers (the producers) are joined => their pipe clones are gone.
+    // Closing this last handle before collecting fully disconnects the
+    // channel, so `collect` stops as soon as the buffered data is drained.
+    pipe_dirs.close();
 
     // IMPORTANT: collecting from this pipe _after_ join ensures that the
     // completion signal is sent before blocking on `collect`
     let dirs = pipe_dirs.collect_until_finished();
-    pipe_dirs.close();
 
     info!("PHASE 1: Creating directories ...");
     let mut created_dirs: HashSet<String> = HashSet::with_capacity(

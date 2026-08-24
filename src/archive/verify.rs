@@ -165,7 +165,7 @@ fn scan_worker_thread(
         std::io::copy(&mut entry, &mut std::io::sink())?;
 
         let scanned = ScannedEntry { rel_path: rel, kind, hash, size };
-        pipe.input().send(scanned)?;
+        pipe.send(scanned)?;
     }
 
     Ok(())
@@ -180,7 +180,7 @@ pub fn verify(
     use_md5:      &bool,
     root_prefix:  Option<&Path>,
 ) -> Result<Arc<TreeNode>, ArchiverError<String>> {
-    let pipe = Pipe::<ScannedEntry>::new();
+    let mut pipe = Pipe::<ScannedEntry>::new();
     let loc_compress = *compress;
     let loc_use_md5  = *use_md5;
 
@@ -222,9 +222,12 @@ pub fn verify(
     }
     info!(" ... workers are done!");
     pipe.set_completed().map_err(Relabel::<String>::relabel)?;
+    // The workers (the producers) are joined => their pipe clones are gone.
+    // Closing this last handle before collecting fully disconnects the
+    // channel, so `collect` stops as soon as the buffered data is drained.
+    pipe.close();
 
     let scanned = pipe.collect_until_finished();
-    pipe.close();
     info!("Collected {} entries; assembling tree", scanned.len());
 
     let tree = build_tree(scanned, root_prefix)?;
