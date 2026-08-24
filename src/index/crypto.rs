@@ -188,3 +188,145 @@ fn fill_recursive(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::index::tree::{TreeNode, NodeType};
+    use std::path::PathBuf;
+    use std::sync::{Arc, RwLock};
+
+    fn node(name: &str, node_type: NodeType) -> Arc<TreeNode> {
+        Arc::new(TreeNode {
+            name: name.to_string(),
+            path: PathBuf::from(name),
+            node_type,
+            metadata: RwLock::new(None),
+            hash: RwLock::new(None),
+        })
+    }
+
+    fn file(name: &str, size: u64, hash: Option<&str>) -> Arc<TreeNode> {
+        let n = node(name, NodeType::File { size });
+        * n.hash.write().unwrap() = hash.map(str::to_string);
+        n
+    }
+
+    fn dir(name: &str, children: Vec<Arc<TreeNode>>) -> Arc<TreeNode> {
+        node(name, NodeType::Directory { children })
+    }
+
+    // Index hashes are the product's core promise (byte-for-byte archive
+    // validation) => pin the primitives to known test vectors so a silent
+    // change in encoding or algorithm cannot slip through.
+
+    #[test]
+    fn hash_primitives_match_known_vectors() {
+        assert_eq!(
+            hash_string_md5("abc"),
+            "900150983cd24fb0d6963f7d28e17f72"
+        );
+        assert_eq!(
+            hash_string_sha256("abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn directory_hash_is_deterministic() {
+        let build = || dir("root", vec![
+            file("a", 1, Some("hash-a")),
+            file("b", 2, Some("hash-b")),
+        ]);
+        let h1 = build().compute_hashes(false).unwrap();
+        let h2 = build().compute_hashes(false).unwrap();
+        assert!(h1.is_some());
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn directory_hash_is_independent_of_child_order() {
+        // Children are combined sorted by name => the same set of children
+        // must hash identically regardless of scan/insertion order
+        let fwd = dir("root", vec![
+            file("a", 1, Some("hash-a")),
+            file("b", 2, Some("hash-b")),
+        ]);
+        let rev = dir("root", vec![
+            file("b", 2, Some("hash-b")),
+            file("a", 1, Some("hash-a")),
+        ]);
+        assert_eq!(
+            fwd.compute_hashes(false).unwrap(),
+            rev.compute_hashes(false).unwrap()
+        );
+    }
+
+    #[test]
+    fn directory_hash_depends_on_child_names_and_hashes() {
+        let base = dir("root", vec![file("a", 1, Some("hash-a"))]);
+        let renamed = dir("root", vec![file("b", 1, Some("hash-a"))]);
+        let rehashed = dir("root", vec![file("a", 1, Some("hash-x"))]);
+
+        let h_base = base.compute_hashes(false).unwrap();
+        assert_ne!(h_base, renamed.compute_hashes(false).unwrap());
+        assert_ne!(h_base, rehashed.compute_hashes(false).unwrap());
+    }
+
+    #[test]
+    fn md5_and_sha256_trees_hash_differently() {
+        let build = || dir("root", vec![file("a", 1, Some("hash-a"))]);
+        assert_ne!(
+            build().compute_hashes(false).unwrap(),
+            build().compute_hashes(true).unwrap()
+        );
+    }
+
+    #[test]
+    fn unhashed_file_propagates_none_to_all_ancestors() {
+        let tree = dir("root", vec![
+            dir("full", vec![file("a", 1, Some("hash-a"))]),
+            dir("partial", vec![file("b", 2, None)]),
+        ]);
+        assert_eq!(tree.compute_hashes(false).unwrap(), None);
+
+        // None is not cached => filling in the missing leaf hash later must
+        // let a recompute succeed (the fill_hashes + compute_hashes flow)
+        if let NodeType::Directory { children } = &tree.node_type {
+            if let NodeType::Directory { children } = &children[1].node_type {
+                * children[0].hash.write().unwrap() =
+                    Some("hash-b".to_string());
+            }
+        }
+        assert!(tree.compute_hashes(false).unwrap().is_some());
+    }
+
+    #[test]
+    fn cached_hash_is_returned_unchanged() {
+        let tree = dir("root", vec![file("a", 1, Some("hash-a"))]);
+        * tree.hash.write().unwrap() = Some("preset".to_string());
+        assert_eq!(
+            tree.compute_hashes(false).unwrap(),
+            Some("preset".to_string())
+        );
+    }
+
+    #[test]
+    fn symlink_hash_derives_from_target() {
+        let link = node("link", NodeType::Symlink {
+            target: PathBuf::from("a.txt")
+        });
+        assert_eq!(
+            link.compute_hashes(false).unwrap(),
+            Some(hash_string_sha256("a.txt"))
+        );
+        // Same target, different link name => same hash
+        let link2 = node("other-name", NodeType::Symlink {
+            target: PathBuf::from("a.txt")
+        });
+        assert_eq!(
+            link.compute_hashes(false).unwrap(),
+            link2.compute_hashes(false).unwrap()
+        );
+    }
+}

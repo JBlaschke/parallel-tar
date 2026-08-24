@@ -192,3 +192,50 @@ impl Iterator for BreadthFirstIter {
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn node(name: &str, node_type: NodeType) -> Arc<TreeNode> {
+        Arc::new(TreeNode {
+            name: name.to_string(),
+            path: PathBuf::from(name),
+            node_type,
+            metadata: RwLock::new(None),
+            hash: RwLock::new(None),
+        })
+    }
+
+    #[test]
+    fn compute_metadata_aggregates_sizes_files_and_dirs() {
+        // root/
+        //   a (10 bytes)
+        //   sub/
+        //     b (32 bytes)
+        //     link -> a
+        let tree = node("root", NodeType::Directory { children: vec![
+            node("a", NodeType::File { size: 10 }),
+            node("sub", NodeType::Directory { children: vec![
+                node("b", NodeType::File { size: 32 }),
+                node("link", NodeType::Symlink {
+                    target: PathBuf::from("a")
+                }),
+            ]}),
+        ]});
+
+        let meta = tree.compute_metadata().unwrap();
+        assert_eq!(meta.size, 42);
+        // Symlinks count as files (of size 0)
+        assert_eq!(meta.files, 3);
+        // Both `root` and `sub` count as directories
+        assert_eq!(meta.dirs, 2);
+    }
+
+    #[test]
+    fn compute_metadata_of_empty_directory() {
+        let tree = node("root", NodeType::Directory { children: vec![] });
+        let meta = tree.compute_metadata().unwrap();
+        assert_eq!((meta.size, meta.files, meta.dirs), (0, 0, 1));
+    }
+}

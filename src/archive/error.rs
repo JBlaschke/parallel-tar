@@ -122,3 +122,85 @@ impl<T: Clone, S: Clone> Relabel<S> for ArchiverError<T> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The nested-payload conversions are subtle: a worker sending
+    // `Result<T, ArchiverError<T>>` down a pipe produces
+    // `SendError<Result<T, ArchiverError<T>>>` on failure, which must
+    // collapse back to a plain `ArchiverError<T>` without losing the inner
+    // error a worker was trying to report.
+
+    fn io_error() -> ArchiverError<String> {
+        std::io::Error::new(std::io::ErrorKind::NotFound, "gone").into()
+    }
+
+    #[test]
+    fn send_error_of_err_payload_unwraps_to_inner_error() {
+        // The worker was reporting an error => that error survives
+        let failed_send = SendError(Err(io_error()) as RTAET<String>);
+        let converted: ArchiverError<String> = failed_send.into();
+        assert!(matches!(converted, ArchiverError::Io(_)));
+    }
+
+    #[test]
+    fn send_error_of_ok_payload_becomes_channel_closed() {
+        // The worker was reporting a success => only the closure is notable
+        let failed_send = SendError(Ok("done".to_string()) as RTAET<String>);
+        let converted: ArchiverError<String> = failed_send.into();
+        assert!(matches!(converted, ArchiverError::ChannelClosed));
+    }
+
+    #[test]
+    fn nested_archiver_error_send_variants_collapse() {
+        // ArchiverError<RTAET<T>> -> ArchiverError<T>
+        let nested: ArchiverError<RTAET<String>> =
+            ArchiverError::SendError(SendError(Ok("v".to_string())));
+        assert!(matches!(
+            ArchiverError::<String>::from(nested),
+            ArchiverError::SendError(SendError(v)) if v == "v"
+        ));
+
+        let nested: ArchiverError<RTAET<String>> =
+            ArchiverError::SendError(SendError(Err(io_error())));
+        assert!(matches!(
+            ArchiverError::<String>::from(nested), ArchiverError::Io(_)
+        ));
+    }
+
+    #[test]
+    fn nested_archiver_error_other_variants_are_preserved() {
+        let nested: ArchiverError<RTAET<String>> = ArchiverError::LockPoisoned;
+        assert!(matches!(
+            ArchiverError::<String>::from(nested), ArchiverError::LockPoisoned
+        ));
+
+        let nested: ArchiverError<RTAET<String>> = io_error().relabel();
+        assert!(matches!(
+            ArchiverError::<String>::from(nested), ArchiverError::Io(_)
+        ));
+    }
+
+    #[test]
+    fn relabel_preserves_variants_and_drops_send_payload() {
+        // Payload-carrying SendError cannot cross payload types => it
+        // degrades to ChannelClosed; everything else converts losslessly
+        let e: ArchiverError<String> =
+            ArchiverError::SendError(SendError("v".to_string()));
+        assert!(matches!(
+            Relabel::<u32>::relabel(e), ArchiverError::ChannelClosed
+        ));
+
+        assert!(matches!(
+            Relabel::<u32>::relabel(io_error()), ArchiverError::Io(_)
+        ));
+        assert!(matches!(
+            Relabel::<u32>::relabel(
+                ArchiverError::<String>::ChannelClosed
+            ),
+            ArchiverError::ChannelClosed
+        ));
+    }
+}
