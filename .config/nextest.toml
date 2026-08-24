@@ -1,0 +1,5 @@
+# Channel-abstraction regressions typically manifest as hangs rather than
+# failures -- flag any test as slow after 30s and kill it after 60s, so a
+# reintroduced deadlock shows up as a timed-out test instead of a stuck CI job.
+[profile.default]
+slow-timeout = { period = "30s", terminate-after = 2 }

@@ -323,3 +323,163 @@ impl<T: Clone> Pipe<T> {
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Everything below uses only the public `Pipe` API, so these tests are
+    // valid for both the flume and the `feature = "std"` (mpsc) back ends.
+
+    #[test]
+    fn send_and_take_roundtrip() {
+        let pipe = Pipe::<u32>::new();
+        pipe.send(42).unwrap();
+        assert_eq!(pipe.take_try_many().unwrap(), 42);
+    }
+
+    #[test]
+    fn close_disables_this_handles_sender() {
+        let mut pipe = Pipe::<u32>::new();
+        pipe.close();
+        // Both ways of reaching the sending end must report closure
+        assert!(matches!(pipe.send(1), Err(ArchiverError::ChannelClosed)));
+        assert!(matches!(pipe.input(), Err(ArchiverError::ChannelClosed)));
+    }
+
+    #[test]
+    fn clone_keeps_channel_open_until_all_handles_closed() {
+        let mut pipe = Pipe::<u32>::new();
+        let mut clone = pipe.clone();
+
+        // Closing one handle must not close the channel: the clone's sender
+        // is still alive and data still flows
+        pipe.close();
+        assert!(pipe.send(1).is_err());
+        clone.send(2).unwrap();
+        assert_eq!(pipe.take_try_many().unwrap(), 2);
+
+        // Once the last handle closes, receivers must see the disconnect
+        clone.close();
+        assert!(matches!(
+            pipe.take_try_many(), Err(ArchiverError::ChannelClosed)
+        ));
+    }
+
+    #[test]
+    fn input_sender_keeps_channel_alive() {
+        let mut pipe = Pipe::<u32>::new();
+        let tx = pipe.input().unwrap();
+
+        // The `Sender` handed out by `input` counts as an open handle
+        pipe.close();
+        tx.send(7).unwrap();
+        assert_eq!(pipe.take_try_many().unwrap(), 7);
+
+        // ... and dropping it disconnects the channel
+        drop(tx);
+        assert!(matches!(
+            pipe.take_try_many(), Err(ArchiverError::ChannelClosed)
+        ));
+    }
+
+    #[test]
+    fn buffered_data_survives_close() {
+        // Closing must not lose data that is already in the channel
+        let mut pipe = Pipe::<u32>::new();
+        pipe.send(1).unwrap();
+        pipe.send(2).unwrap();
+        pipe.close();
+        assert_eq!(pipe.take_try_many().unwrap(), 1);
+        assert_eq!(pipe.take_try_many().unwrap(), 2);
+        assert!(matches!(
+            pipe.take_try_many(), Err(ArchiverError::ChannelClosed)
+        ));
+    }
+
+    #[test]
+    fn collect_until_finished_ends_on_disconnect() {
+        // The producers never touch the `completed` semaphore -- the channel
+        // disconnect alone must end the collection. Before the `close` fix
+        // this would hang forever.
+        let mut pipe = Pipe::<u32>::new();
+
+        let mut producers = Vec::new();
+        for t in 0..4u32 {
+            let loc = pipe.clone();
+            producers.push(thread::spawn(move || {
+                for i in 0..25u32 {
+                    loc.send(t * 25 + i).unwrap();
+                }
+                // `loc` (and its sender) dropped here
+            }));
+        }
+        for p in producers {
+            p.join().unwrap();
+        }
+
+        pipe.close(); // last handle => channel disconnects
+        let items = pipe.collect_until_finished();
+        assert_eq!(items.len(), 100);
+    }
+
+    #[test]
+    fn collect_until_finished_ends_on_completed_flag() {
+        // The original semaphore-based termination must keep working even
+        // while the pipe still holds an open sender
+        let pipe = Pipe::<u32>::new();
+        pipe.send(1).unwrap();
+        pipe.send(2).unwrap();
+        pipe.set_completed().unwrap();
+        let items = pipe.collect_until_finished();
+        assert_eq!(items, vec![1, 2]);
+    }
+
+    #[test]
+    fn collect_expected_receives_from_concurrent_producers() {
+        let pipe = Pipe::<u32>::new();
+
+        let mut producers = Vec::new();
+        for t in 0..4u32 {
+            let loc = pipe.clone();
+            producers.push(thread::spawn(move || {
+                for i in 0..10u32 {
+                    loc.send(t * 10 + i).unwrap();
+                }
+            }));
+        }
+
+        // Blocks until all 40 items have arrived -- `completed` is never set
+        let items = pipe.collect_expected(40);
+        assert_eq!(items.len(), 40);
+
+        for p in producers {
+            p.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn collect_expected_stops_early_when_channel_closed() {
+        // Expecting more items than the (closed) channel will ever deliver
+        // must return the drained items instead of blocking forever
+        let mut pipe = Pipe::<u32>::new();
+        pipe.send(1).unwrap();
+        pipe.send(2).unwrap();
+        pipe.send(3).unwrap();
+        pipe.close();
+        let items = pipe.collect_expected(5);
+        assert_eq!(items, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn completed_flag_roundtrip() {
+        let pipe = Pipe::<u32>::new();
+        assert!(! pipe.get_completed().unwrap());
+        assert!(! pipe.check_completed());
+        pipe.set_completed().unwrap();
+        assert!(pipe.get_completed().unwrap());
+        assert!(pipe.check_completed());
+        // The flag is shared state => visible through clones
+        assert!(pipe.clone().check_completed());
+    }
+}

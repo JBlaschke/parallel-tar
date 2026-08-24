@@ -231,3 +231,54 @@ pub fn apply_chmod_plan(plan: DirPlan) -> io::Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize_rel_path;
+    use std::path::{Path, PathBuf};
+
+    // `sanitize_rel_path` is the path-traversal defense applied to every tar
+    // entry path during extract/verify -- an entry must never be able to
+    // escape the destination directory.
+
+    #[test]
+    fn plain_relative_path_passes_through() {
+        assert_eq!(
+            sanitize_rel_path(Path::new("a/b/c.txt")),
+            Some(PathBuf::from("a/b/c.txt"))
+        );
+    }
+
+    #[test]
+    fn absolute_path_is_made_relative() {
+        assert_eq!(
+            sanitize_rel_path(Path::new("/etc/passwd")),
+            Some(PathBuf::from("etc/passwd"))
+        );
+    }
+
+    #[test]
+    fn parent_dir_component_is_rejected() {
+        // Anywhere in the path -- leading, embedded, or trailing
+        assert_eq!(sanitize_rel_path(Path::new("../evil")), None);
+        assert_eq!(sanitize_rel_path(Path::new("a/../../evil")), None);
+        assert_eq!(sanitize_rel_path(Path::new("a/b/..")), None);
+        assert_eq!(sanitize_rel_path(Path::new("/../evil")), None);
+    }
+
+    #[test]
+    fn cur_dir_components_are_stripped() {
+        assert_eq!(
+            sanitize_rel_path(Path::new("./a/./b")),
+            Some(PathBuf::from("a/b"))
+        );
+    }
+
+    #[test]
+    fn paths_with_no_normal_components_are_rejected() {
+        assert_eq!(sanitize_rel_path(Path::new("")), None);
+        assert_eq!(sanitize_rel_path(Path::new(".")), None);
+        assert_eq!(sanitize_rel_path(Path::new("/")), None);
+        assert_eq!(sanitize_rel_path(Path::new("./.")), None);
+    }
+}
