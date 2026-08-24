@@ -1,4 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+
+//! Error type shared by all archive operations.
+//!
+//! [`ArchiverError`] is generic over `T`, the payload type of the channel
+//! the failing code was talking to (a failed send returns the unsent item).
+//! Errors therefore need converting when they cross between code paths with
+//! different channel payloads — that's what the nested `From` impls and the
+//! [`Relabel`] trait are for.
+
 use crate::archive::mutex::{TryRecvError, RecvTimeoutError, SendError};
 
 use std::fmt;
@@ -6,6 +15,10 @@ use std::sync::Arc;
 use std::error::Error;
 use walkdir::Error as WdError;
 
+/// Anything that can go wrong while creating, extracting, or verifying an
+/// archive: I/O and directory-walk failures, plus every way the worker
+/// channels ([`crate::archive::mutex::Pipe`]) can fail. `T` is the channel
+/// payload type; [`SendError`] carries the item that could not be sent.
 #[derive(Debug, Clone)]
 pub enum ArchiverError<T> where T: Clone {
     Io(Arc<std::io::Error>),
@@ -105,6 +118,9 @@ impl<T: Clone> From<ArchiverError<RTAET<T>>> for ArchiverError<T> {
 // The blanket below covers EVERY pair of payload types, including
 // `T == S` (which is just an identity conversion through the match).
 
+/// Convert an `ArchiverError<T>` into an `ArchiverError<S>` at a payload
+/// boundary. All variants convert losslessly except `SendError`, whose
+/// `T`-typed payload cannot cross — it degrades to `ChannelClosed`.
 pub trait Relabel<S: Clone> {
     fn relabel(self) -> ArchiverError<S>;
 }

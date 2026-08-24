@@ -1,4 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+
+//! Filesystem helpers for the archiver: work-list enumeration and
+//! tar-header permission modes.
+
 use crate::archive::error::ArchiverError;
 
 // File system
@@ -13,6 +17,10 @@ use std::os::unix::fs::PermissionsExt;
 // Tar files
 use tar::Header;
 
+/// Recursively enumerate everything under `folder_path` (files,
+/// directories, and symlinks — followed if `follow_links`) as path strings.
+/// This is the work list `create` distributes to its workers when not
+/// building from a tree file.
 pub fn find_files(
         folder_path: &PathBuf, follow_links: bool
     ) -> Result<Vec<String>, ArchiverError<String>> {
@@ -38,6 +46,8 @@ pub fn find_files(
     Ok(files)
 }
 
+/// Whether `path_str` is a symlink (without following it). Stat failures
+/// are logged and treated as "not a symlink".
 pub fn is_symlink(path_str: &str) -> bool {
     let path = Path::new(& path_str);
     path.symlink_metadata().map(
@@ -72,7 +82,10 @@ fn mode_to_string(mode: u32) -> String {
     s
 }
 
-/// Generate a default mode bit respresentation depending on directory vs file
+/// Pick a conservative default mode by file type: `0o700` for directories,
+/// `0o777` for symlinks (the tar convention), `0o600` for regular files.
+/// Used on platforms without Unix mode bits, or when a path can't be
+/// statted.
 pub fn default_mode_for_path(md: &Metadata) -> u32 {
     let ft = md.file_type();
 
@@ -85,6 +98,9 @@ pub fn default_mode_for_path(md: &Metadata) -> u32 {
     }
 }
 
+/// Set `header`'s mode from `path`'s on-disk permissions, falling back to
+/// [`default_mode_for_path`] (or `0o600` if the path can't be statted at
+/// all) with a warning rather than failing.
 pub fn set_mode_from_path_or_default(header: &mut Header, path: &String) {
     let md = match symlink_metadata(path) {
         Ok(md) => md,

@@ -1,4 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+
+//! Save and load index trees as `.idx` (MessagePack) or `.json` files.
+//!
+//! [`TreeNode`] itself is not directly serializable (its derived fields sit
+//! behind `RwLock`s), so trees are converted to/from the plain
+//! [`SerializedTreeNode`] mirror via the [`Serializeable`] trait. The
+//! on-disk format is chosen by [`DataFmt`]; the "empty tree" `.etr` files
+//! produced by `parallel-idx -e` are ordinary `.idx` files whose metadata
+//! and hash fields are all `None`.
+
 use crate::index::tree::{TreeNode, NodeType, NodeMetadata};
 use crate::index::error::IndexerError;
 
@@ -11,6 +21,8 @@ use serde_json;
 use rmp_serde;
 
 
+/// Serializable mirror of [`NodeType`]; must be kept structurally in sync
+/// with it.
 #[derive(Debug, Serialize, Deserialize)]
 pub enum SerializedNodeType {
     File { size: u64 },
@@ -22,6 +34,9 @@ pub enum SerializedNodeType {
     Unknown { error: String }
 }
 
+/// Serializable mirror of [`TreeNode`], with the `RwLock`s unwrapped to
+/// plain `Option`s. This is the exact structure written to `.idx`/`.json`
+/// files; must be kept structurally in sync with [`TreeNode`].
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SerializedTreeNode {
     pub name: String,
@@ -31,8 +46,12 @@ pub struct SerializedTreeNode {
     pub hash: Option<String>
 }
 
+/// Conversion between a live tree and its on-disk mirror.
 pub trait Serializeable {
+    /// Deep-copy this node (and its subtree) into the serializable mirror,
+    /// snapshotting the current metadata and hash values.
     fn to_serializable(&self) -> Result<SerializedTreeNode, IndexerError>;
+    /// Rebuild a live tree from its serializable mirror.
     fn from_serializable(s: SerializedTreeNode) -> Arc<Self>;
 }
 
@@ -99,6 +118,8 @@ impl Serializeable for TreeNode {
     }
 }
 
+/// An index file path tagged with its on-disk format: human-readable JSON,
+/// or the compact MessagePack `.idx` format (also used for `.etr` files).
 #[derive(Debug)]
 pub enum DataFmt {
     Json(String),
@@ -139,6 +160,8 @@ fn load_tree_rmp(path: &str) -> Result<Arc<TreeNode>, IndexerError> {
     Ok(TreeNode::from_serializable(serializable))
 }
 
+/// Write `tree` to the path and format named by `fmt`, overwriting any
+/// existing file.
 pub fn save_tree(tree: &TreeNode, fmt: DataFmt) -> Result<(), IndexerError> {
     match fmt {
         DataFmt::Json(path) => save_tree_json(tree, & path),
@@ -146,6 +169,7 @@ pub fn save_tree(tree: &TreeNode, fmt: DataFmt) -> Result<(), IndexerError> {
     }
 }
 
+/// Read an index tree from the path and format named by `fmt`.
 pub fn load_tree(fmt: DataFmt) -> Result<Arc<TreeNode>, IndexerError> {
     match fmt {
         DataFmt::Json(path) => load_tree_json(& path),

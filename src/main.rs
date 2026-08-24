@@ -1,4 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+
+//! `parallel-tar` — create (`-c`), extract (`-x`), or verify (`-i`) sharded
+//! tar archives using `-n` worker threads.
+//!
+//! Creation targets a directory or, with `-t`, replays the paths recorded
+//! in an index/tree file. Verification rebuilds an index from the archive
+//! streams (see [`ptar_lib::archive::verify`]) and saves it to the path
+//! given by `-f`. See the crate-level docs of [`ptar_lib`] for the full
+//! workflow.
+
 // Clap
 use clap::{Arg, ArgGroup, Command, value_parser};
 // Stdlib

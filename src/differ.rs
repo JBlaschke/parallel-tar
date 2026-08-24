@@ -1,4 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+
+//! `diff-idx` — side-by-side, one-level-deep comparison of two index files.
+//!
+//! Children are aligned by name; hashes decide `==` vs `!=`, and one-sided
+//! entries are marked `<` / `>`. Use `-p` to drill into whichever differing
+//! subtree needs investigating next.
+
 use std::error::Error;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -51,7 +58,11 @@ fn icon_for(node: &TreeNode) -> String {
 /// color-wrap the hash slice at the end.
 ///
 /// Layout (column width = `width`):
+///
+/// ```text
 ///     "<icon> <name> (<size>, <hash16>)"
+/// ```
+///
 /// Truncated/padded to `width` chars. Hash is always the last 16+2 chars
 /// before the closing paren, so we can locate it for coloring.
 fn format_cell(node: Option<&Arc<TreeNode>>, width: usize) -> (String, Option<(usize, usize)>) {

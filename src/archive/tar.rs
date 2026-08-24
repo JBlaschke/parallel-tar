@@ -1,4 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+
+//! Create and extract sharded tar archives with worker threads.
+//!
+//! [`create`] fans a work list of paths out to `n` workers, each writing its
+//! own shard `<name>.<worker>.tar[.gz]` inside the destination directory.
+//! [`extract`] runs the reverse in two phases: all shards are first scanned
+//! for directories (created up front, with restrictive permissions deferred
+//! via [`DirPlan`]), then each worker unpacks one shard's files.
+
 use crate::files::path::{
     DirPlan, analyze_path, sanitize_rel_path, set_chmod_plan, apply_chmod_plan
 };
@@ -195,6 +204,19 @@ fn extract_worker_thread(
     Ok(())
 }
 
+/// Create a sharded archive of `target` using `num_threads` workers.
+///
+/// `target` is either a directory to walk, or — when `from_tree` — an index
+/// file (`.etr`/`.idx`, JSON if `json_fmt`) whose recorded paths are
+/// archived instead. Shards are written to a freshly-created directory
+/// named `archive_name` (it is an error if that path already exists),
+/// gzip-compressed when `compress`. When the target resolves to an absolute
+/// path, the process `chdir`s to its parent so tar entries are stored
+/// relative to it.
+///
+/// Every requested path is checked off against worker acknowledgements at
+/// the end; paths that vanished mid-run produce warnings rather than
+/// errors.
 pub fn create(
             archive_name: &String, 
             target: &String,
@@ -350,6 +372,15 @@ pub fn create(
     Ok(())
 }
 
+/// Extract a sharded archive into the `target` directory using
+/// `num_threads` workers (one per shard `<archive_name>.<i>.tar[.gz]`).
+///
+/// Runs in two phases: (1) all shards are scanned and every directory is
+/// created up front — restrictive directory modes are deferred in a
+/// [`DirPlan`] so files can still be written; (2) each worker unpacks its
+/// shard's non-directory entries. Entry paths are sanitized
+/// ([`sanitize_rel_path`]) so no entry can escape `target`; the deferred
+/// directory permissions are applied last, deepest-first.
 pub fn extract(
             archive_name: &String,
             target: &String,

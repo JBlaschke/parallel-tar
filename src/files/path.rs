@@ -1,4 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+
+//! Lexical path analysis and sanitization.
+//!
+//! [`analyze_path`] decides where the archiver should `chdir` before adding
+//! entries (absolute inputs are archived from their parent directory);
+//! [`sanitize_rel_path`] is the path-traversal defense applied to every tar
+//! entry during extract/verify; and [`DirPlan`] records directory permission
+//! fix-ups that must be deferred until extraction is complete (a read-only
+//! directory can't have files created inside it).
+
 use std::io;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -100,6 +110,11 @@ fn lexical_normalize(path: &Path) -> PathBuf {
     }
 }
 
+/// Final permissions for one directory, as recorded from a tar header.
+///
+/// On Unix this is the full mode; on Windows only a read-only flag can be
+/// expressed. `priority` breaks ties deterministically when several tar
+/// shards carry an entry for the same directory.
 #[derive(Clone, Copy, Debug)]
 pub struct DirMode {
     #[cfg(unix)]
@@ -110,6 +125,12 @@ pub struct DirMode {
     priority: usize,
 }
 
+/// Deferred directory-permission plan built up during extraction.
+///
+/// Directories whose archived mode is not writable are left writable while
+/// files are extracted into them; their restrictive modes are registered here
+/// (via [`set_chmod_plan`]) and applied in one deepest-first pass at the end
+/// (via [`apply_chmod_plan`]).
 #[derive(Default, Debug)]
 pub struct DirPlan {
     // Original mode for dirs we temporarily chmod'd to be writable.
@@ -132,6 +153,9 @@ pub fn sanitize_rel_path(path: &Path) -> Option<PathBuf> {
     if out.as_os_str().is_empty() { None } else { Some(out) }
 }
 
+/// Register `dir`'s archived `mode` in the [`DirPlan`] if it is too
+/// restrictive to extract into (missing write or execute for the owner).
+/// A higher-`priority` registration for the same directory wins.
 #[cfg(unix)]
 pub fn set_chmod_plan(
             plan: &mut DirPlan, dir: &Path, mode: u32, priority: usize
@@ -162,6 +186,9 @@ pub fn set_chmod_plan(
     Ok(())
 }
 
+/// Register `dir` in the [`DirPlan`] as read-only if the archived `mode` has
+/// no write bits at all. A higher-`priority` registration for the same
+/// directory wins.
 #[cfg(windows)]
 pub fn set_chmod_plan(
             plan: &mut DirPlan, dir: &Path, mode: u32, priority: usize
@@ -194,6 +221,9 @@ pub fn set_chmod_plan(
     Ok(())
 }
 
+/// Apply every mode registered in the [`DirPlan`], deepest paths first (a
+/// directory made read-only too early would block updates to its children).
+/// Call once, after all extraction workers have finished.
 #[cfg(unix)]
 pub fn apply_chmod_plan(plan: DirPlan) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -213,6 +243,8 @@ pub fn apply_chmod_plan(plan: DirPlan) -> io::Result<()> {
     Ok(())
 }
 
+/// Apply every read-only flag registered in the [`DirPlan`], deepest paths
+/// first. Call once, after all extraction workers have finished.
 #[cfg(windows)]
 pub fn apply_chmod_plan(plan: DirPlan) -> io::Result<()> {
     // Apply final perms deepest-first (deepest first because can't alter child

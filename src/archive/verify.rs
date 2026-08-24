@@ -1,4 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+
+//! Verify an archive by rebuilding an index straight from the tar streams.
+//!
+//! Each worker opens one shard and streams its entries through the same
+//! hash routines `parallel-idx` uses on live files — no extraction, no
+//! temporary files. The scanned entries are assembled into a
+//! [`TreeNode`] tree whose root hash can be compared against an index built
+//! from the original data: matching hashes mean the archive reconstructs
+//! the tree byte-for-byte.
+
 use crate::archive::error::{ArchiverError, Relabel};
 use crate::archive::mutex::Pipe;
 use crate::files::path::sanitize_rel_path;
@@ -19,6 +29,8 @@ use log::{debug, error, info, warn};
 
 // ─── Public types ────────────────────────────────────────────────────────
 
+/// One tar entry as scanned from a shard: its sanitized in-archive path,
+/// kind, content hash (files only), and logical size.
 #[derive(Debug, Clone)]
 pub struct ScannedEntry {
     pub rel_path: PathBuf,
@@ -27,6 +39,8 @@ pub struct ScannedEntry {
     pub size:     u64,
 }
 
+/// The tar entry type of a [`ScannedEntry`], mirroring
+/// [`crate::index::tree::NodeType`] without children.
 #[derive(Debug, Clone)]
 pub enum ScannedKind {
     File,
@@ -173,6 +187,20 @@ fn scan_worker_thread(
 
 // ─── Public entry point ──────────────────────────────────────────────────
 
+/// Scan the shards `<archive_name>.<i>.tar[.gz]` (one worker per
+/// `num_threads`) and assemble the entries into an index tree.
+///
+/// File contents are hashed incrementally from the tar streams (MD5 if
+/// `use_md5`, SHA-256 otherwise). Since shards store tar-relative paths,
+/// `root_prefix` can be prepended to reproduce the absolute paths of an
+/// index built from the live tree (root *hashes* match either way — only
+/// the stored path fields differ).
+///
+/// The returned tree has file hashes filled in but no metadata or directory
+/// hashes; callers run
+/// [`compute_metadata`](crate::index::tree::TreeNode::compute_metadata) and
+/// [`compute_hashes`](crate::index::crypto::HashedNodes::compute_hashes) to
+/// finish it (neither touches the filesystem).
 pub fn verify(
     archive_name: &String,
     num_threads:  &u32,

@@ -1,4 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+
+//! [`Pipe`]: the clonable channel that connects the main thread to archive
+//! workers.
+//!
+//! A `Pipe` bundles a multi-producer channel with a shared `completed` flag,
+//! so consumers can distinguish "no data *yet*" from "no data will ever
+//! come". Collection ends either when the flag is set or when the channel
+//! disconnects (every sender closed or dropped) and is drained.
+//!
+//! Two interchangeable back ends are selected at compile time: the default
+//! is [`flume`] (multi-consumer, lock-free receive); building with
+//! `--features std` swaps in `std::sync::mpsc` with the single receiver
+//! shared behind a mutex.
+
 use crate::archive::error::ArchiverError;
 
 // Multi-threading
@@ -18,6 +32,8 @@ use std::{thread, time::Duration};
 // Logging
 use log::{debug, warn};
 
+/// Set the value behind a shared mutex, holding the lock only for the
+/// assignment.
 pub fn set_mutex<T: Copy, S: Clone>(
             mutex: &Arc<Mutex<T>>, val: T
         ) -> Result<(), ArchiverError<S>> {
@@ -27,6 +43,8 @@ pub fn set_mutex<T: Copy, S: Clone>(
     Ok(())
 }
 
+/// Copy the value out from behind a shared mutex, holding the lock only for
+/// the read.
 pub fn get_mutex<T: Copy, S: Clone>(
             mutex: &Arc<Mutex<T>>
         ) -> Result<T, ArchiverError<S>> {
@@ -230,6 +248,15 @@ fn collect_until_finished<T: Clone>(
     return items;
 }
 
+/// A clonable multi-producer channel with a shared "completed" flag.
+///
+/// Clones share the underlying channel and flag; each clone owns its own
+/// sending handle. The channel disconnects once every clone (and every
+/// `Sender` handed out by [`input`](Self::input)) has been closed or
+/// dropped — the usual pattern is: hand clones to workers, [`send`](Self::send)
+/// all the work, [`close`](Self::close) the producing handle, then collect
+/// results with [`collect_expected`](Self::collect_expected) or
+/// [`collect_until_finished`](Self::collect_until_finished).
 #[derive(Debug, Clone)]
 pub struct Pipe<T> where T: Clone{
     /// `None` once this pipe (clone) has been closed. Kept private so that the
@@ -244,6 +271,7 @@ pub struct Pipe<T> where T: Clone{
 }
 
 impl<T: Clone> Pipe<T> {
+    /// Create a fresh, open pipe with the `completed` flag unset.
     pub fn new() -> Self {
         cfg_if::cfg_if! {
             if #[cfg(feature = "std")] {
@@ -267,8 +295,12 @@ impl<T: Clone> Pipe<T> {
         }
     }
 
+    /// Get a handle to the receiving end of the pipe (mutex-guarded in
+    /// `std` mode, a plain multi-consumer receiver in flume mode).
     #[cfg(feature = "std")]
     pub fn output(&self) -> Arc<Mutex<Receiver<T>>> { self.rx.clone() }
+    /// Get a handle to the receiving end of the pipe (mutex-guarded in
+    /// `std` mode, a plain multi-consumer receiver in flume mode).
     #[cfg(not(feature = "std"))]
     pub fn output(&self) -> Receiver<T> { self.rx.clone() }
 
@@ -288,16 +320,23 @@ impl<T: Clone> Pipe<T> {
     /// `Disconnected` as soon as the remaining buffered data has been drained.
     pub fn close(&mut self) { self.tx = None; }
 
+    /// Receive one item, retrying (with a short sleep) on an empty channel.
+    /// Gives up with `TryRecvError` after ~100 retries or once the
+    /// `completed` flag is set; returns `ChannelClosed` if the channel
+    /// disconnects.
     pub fn take_try_many(&self) -> Result<T, ArchiverError<T>> {
         return take_mutex_try_many(
             &self.rx, 100, Duration::from_millis(128), &self.completed
         );
     }
 
+    /// Set the shared `completed` flag, signalling consumers (on this pipe
+    /// and every clone) that no further data should be waited for.
     pub fn set_completed(&self) -> Result<(), ArchiverError<T>> {
         set_mutex(&self.completed, true)
     }
 
+    /// Read the shared `completed` flag.
     pub fn get_completed(&self) -> Result<bool, ArchiverError<T>> {
         get_mutex(&self.completed)
     }
@@ -311,12 +350,19 @@ impl<T: Clone> Pipe<T> {
         return check_mutex::<bool, ArchiverError<T>>(&self.completed, true);
     }
 
+    /// Block until `ct_expect` items have been received, the channel
+    /// disconnects and drains, or the `completed` flag is observed on a
+    /// receive timeout. Returns whatever was collected; a short count is
+    /// logged as a warning, not an error.
     pub fn collect_expected(&self, ct_expect: usize) -> Vec<T> {
         return collect_expected(
             ct_expect, &self.rx, &self.completed, Duration::from_millis(4000)
         );
     }
 
+    /// Drain the channel of an unknown number of items, blocking until the
+    /// channel disconnects (and is drained) or the `completed` flag is set.
+    /// Meant to be called after the producers have finished.
     pub fn collect_until_finished(&self) -> Vec<T> {
         return collect_until_finished(
             &self.rx, &self.completed, Duration::from_millis(4000)

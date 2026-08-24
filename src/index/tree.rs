@@ -1,4 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+
+//! The [`TreeNode`] data structure at the heart of every index.
+//!
+//! A tree is a hierarchy of `Arc<TreeNode>`s. Structure (name, path, node
+//! type, children) is immutable after construction; the derived fields —
+//! [`TreeNode::metadata`] and [`TreeNode::hash`] — live behind `RwLock`s so
+//! they can be filled in later, in parallel (see
+//! [`crate::index::crypto::HashedNodes`]).
+
 use crate::index::error::IndexerError;
 
 // Serde serialization (for NodeMetadata)
@@ -13,6 +22,9 @@ use rayon::prelude::*;
 // Used for logging
 use log::warn;
 
+/// What kind of filesystem object a [`TreeNode`] represents. Only
+/// `Directory` nodes carry children; `Unknown` records the error that
+/// prevented classification (e.g. a permission failure during the walk).
 #[derive(Debug)]
 pub enum NodeType {
     File { size: u64 },
@@ -24,6 +36,9 @@ pub enum NodeType {
     Unknown { error: String }
 }
 
+/// Aggregated per-subtree totals: bytes, file count (symlinks included),
+/// and directory count (the directory itself included). Computed bottom-up
+/// by [`TreeNode::compute_metadata`].
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, Default)]
 pub struct NodeMetadata {
     pub size:  usize,
@@ -31,6 +46,15 @@ pub struct NodeMetadata {
     pub dirs:  usize
 }
 
+/// One node of an index tree.
+///
+/// `name`, `path`, and `node_type` are fixed at construction. `metadata`
+/// and `hash` start as `None` and are filled in by later passes
+/// ([`compute_metadata`](Self::compute_metadata),
+/// [`fill_hashes`](crate::index::crypto::HashedNodes::fill_hashes),
+/// [`compute_hashes`](crate::index::crypto::HashedNodes::compute_hashes));
+/// they sit behind `RwLock`s so those passes can run in parallel over
+/// shared `Arc<TreeNode>`s.
 #[derive(Debug)]
 pub struct TreeNode {
     pub name: String,

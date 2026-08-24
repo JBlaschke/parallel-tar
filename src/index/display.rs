@@ -1,8 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+
+//! Pretty-printing for index trees (the `view-idx` tree view).
+
 use crate::index::tree::{TreeNode, NodeType};
 
 use std::sync::Arc;
 
+/// Render a tree to stdout in `tree(1)`-style, one node per line with a
+/// type icon, human-readable size, and truncated hash. Start a print with
+/// `prefix = ""` and `is_last = true`.
 pub trait Display {
     fn print_tree(self: &Arc<Self>, prefix: &str, is_last: bool);
     fn print_tree_depth(self: &Arc<Self>, prefix: &str, is_last: bool, max_depth: usize);
@@ -66,6 +72,8 @@ impl Display for TreeNode {
     }
 }
 
+/// Format a byte count for humans: `"512 B"`, `"1.50 KB"`, `"2.00 MB"`,
+/// `"1689.34 GB"` (binary multiples, two decimals).
 pub fn format_size(bytes: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = KB * 1024;
