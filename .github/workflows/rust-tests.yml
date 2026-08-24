@@ -1,0 +1,49 @@
+name: Rust tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }}, ${{ matrix.features == '' && 'flume' || 'std mpsc' }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        # Exercise both channel back ends: flume (default) and std mpsc
+        features: ["", "--features std"]
+
+    steps:
+      # ------------------------------------------------------------------
+      # 1. Checkout
+      # ------------------------------------------------------------------
+      - uses: actions/checkout@v4
+
+      # ------------------------------------------------------------------
+      # 2. Set up Rust toolchain + build cache
+      # ------------------------------------------------------------------
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: tests-${{ matrix.os }}
+
+      # ------------------------------------------------------------------
+      # 3. Install nextest (timeouts are configured in .config/nextest.toml,
+      #    so a reintroduced channel deadlock fails the job instead of
+      #    hanging it)
+      # ------------------------------------------------------------------
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      # ------------------------------------------------------------------
+      # 4. Run unit + end-to-end tests (dependencies are vendored => offline)
+      # ------------------------------------------------------------------
+      - name: Run tests
+        run: cargo nextest run --offline ${{ matrix.features }}
