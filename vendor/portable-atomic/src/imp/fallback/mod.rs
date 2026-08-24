@@ -47,22 +47,25 @@ compile_error!(
     "internal error: unreachable since 128-bit target either has atomic CAS for the pointer width or does not have CAS"
 );
 
-#[macro_use]
-pub(crate) mod utils;
+mod utils;
 
 // Use "wide" sequence lock if the pointer width <= 32 for preventing its counter against wrap
 // around.
 //
 // Some 64-bit architectures have ABI with 32-bit pointer width (e.g., x86_64 X32 ABI,
 // AArch64 ILP32 ABI, mips64 N32 ABI). On those targets, AtomicU64 is available and fast,
-// so use it to implement normal sequence lock.
-cfg_has_fast_atomic_64! {
+// so use it to implement normal sequence lock and reduce chunks of byte-wise atomic memcpy.
+cfg_has_fast_atomic_64!({
     mod seq_lock;
-}
-cfg_no_fast_atomic_64! {
+    type AtomicChunk = core::sync::atomic::AtomicU64;
+    type Chunk = u64;
+});
+cfg_no_fast_atomic_64!({
     #[path = "seq_lock_wide.rs"]
     mod seq_lock;
-}
+    type AtomicChunk = core::sync::atomic::AtomicU32;
+    type Chunk = u32;
+});
 
 use core::{cell::UnsafeCell, mem, sync::atomic::Ordering};
 
@@ -73,11 +76,6 @@ use self::{
 #[cfg(portable_atomic_no_strict_provenance)]
 use crate::utils::ptr::PtrExt as _;
 use crate::utils::unlikely;
-
-// Some 64-bit architectures have ABI with 32-bit pointer width (e.g., x86_64 X32 ABI,
-// AArch64 ILP32 ABI, mips64 N32 ABI). On those targets, AtomicU64 is fast,
-// so use it to reduce chunks of byte-wise atomic memcpy.
-use self::seq_lock::{AtomicChunk, Chunk};
 
 // Adapted from https://github.com/crossbeam-rs/crossbeam/blob/crossbeam-utils-0.8.21/crossbeam-utils/src/atomic/atomic_cell.rs#L970-L1010.
 #[inline]
@@ -96,6 +94,27 @@ fn lock(addr: usize) -> &'static SeqLock {
     // If the modulus is a constant number, the compiler will use crazy math to transform this into
     // a sequence of cheap arithmetic operations rather than using the slow modulo instruction.
     &LOCKS[addr % LEN]
+}
+
+// Emit SeqCst fence to ensure SeqCst semantics when ordering is SeqCst.
+#[must_use]
+struct ScFenceGuard;
+impl ScFenceGuard {
+    #[inline]
+    fn new(emit_sc_fence: bool) -> Option<Self> {
+        if unlikely(emit_sc_fence) {
+            crate::fence(Ordering::SeqCst);
+            Some(ScFenceGuard)
+        } else {
+            None
+        }
+    }
+}
+impl Drop for ScFenceGuard {
+    #[inline]
+    fn drop(&mut self) {
+        crate::fence(Ordering::SeqCst);
+    }
 }
 
 macro_rules! atomic {
@@ -189,7 +208,7 @@ macro_rules! atomic {
                 ),
                 all(
                     target_arch = "powerpc64",
-                    portable_atomic_unstable_asm_experimental_arch,
+                    not(portable_atomic_no_asm),
                     not(portable_atomic_no_outline_atomics),
                     any(
                         all(
@@ -294,7 +313,7 @@ macro_rules! atomic {
                 ),
                 all(
                     target_arch = "powerpc64",
-                    portable_atomic_unstable_asm_experimental_arch,
+                    not(portable_atomic_no_asm),
                     not(portable_atomic_no_outline_atomics),
                     any(
                         all(
@@ -346,21 +365,20 @@ macro_rules! atomic {
             #[cfg_attr(all(debug_assertions, not(portable_atomic_no_track_caller)), track_caller)]
             pub(crate) fn load(&self, order: Ordering) -> $int_type {
                 crate::utils::assert_load_ordering(order);
+                let _sc_fence = ScFenceGuard::new(order == Ordering::SeqCst);
                 let lock = lock(self.v.get().addr());
 
                 // Try doing an optimistic read first.
-                if let Some(stamp) = lock.optimistic_read(order) {
+                if let Some(stamp) = lock.optimistic_read() {
                     let val = self.optimistic_read();
 
-                    if lock.validate_read(stamp, order) {
+                    if lock.validate_read(stamp) {
                         return val;
                     }
                 }
 
                 // Grab a regular write lock so that writers don't starve this load.
-                let guard = lock.write(
-                    Ordering::AcqRel, // we already emit sc fence in optimistic_read if needed
-                );
+                let guard = lock.write();
                 let val = self.read(&guard);
                 // The value hasn't been changed. Drop the guard without incrementing the stamp.
                 guard.abort();
@@ -371,13 +389,15 @@ macro_rules! atomic {
             #[cfg_attr(all(debug_assertions, not(portable_atomic_no_track_caller)), track_caller)]
             pub(crate) fn store(&self, val: $int_type, order: Ordering) {
                 crate::utils::assert_store_ordering(order);
-                let guard = lock(self.v.get().addr()).write(order);
+                let _sc_fence = ScFenceGuard::new(order == Ordering::SeqCst);
+                let guard = lock(self.v.get().addr()).write();
                 self.write(val, &guard)
             }
 
             #[inline]
             pub(crate) fn swap(&self, val: $int_type, order: Ordering) -> $int_type {
-                let guard = lock(self.v.get().addr()).write(order);
+                let _sc_fence = ScFenceGuard::new(order == Ordering::SeqCst);
+                let guard = lock(self.v.get().addr()).write();
                 let prev = self.read(&guard);
                 self.write(val, &guard);
                 prev
@@ -393,13 +413,10 @@ macro_rules! atomic {
                 failure: Ordering,
             ) -> Result<$int_type, $int_type> {
                 crate::utils::assert_compare_exchange_ordering(success, failure);
-                let order = if unlikely(success == Ordering::SeqCst || failure == Ordering::SeqCst)
-                {
-                    Ordering::SeqCst
-                } else {
-                    Ordering::AcqRel
-                };
-                let guard = lock(self.v.get().addr()).write(order);
+                let _sc_fence = ScFenceGuard::new(
+                    success == Ordering::SeqCst || failure == Ordering::SeqCst
+                );
+                let guard = lock(self.v.get().addr()).write();
                 let prev = self.read(&guard);
                 if prev == current {
                     self.write(new, &guard);
@@ -413,7 +430,8 @@ macro_rules! atomic {
 
             #[inline]
             pub(crate) fn fetch_add(&self, val: $int_type, order: Ordering) -> $int_type {
-                let guard = lock(self.v.get().addr()).write(order);
+                let _sc_fence = ScFenceGuard::new(order == Ordering::SeqCst);
+                let guard = lock(self.v.get().addr()).write();
                 let prev = self.read(&guard);
                 self.write(prev.wrapping_add(val), &guard);
                 prev
@@ -421,7 +439,8 @@ macro_rules! atomic {
 
             #[inline]
             pub(crate) fn fetch_sub(&self, val: $int_type, order: Ordering) -> $int_type {
-                let guard = lock(self.v.get().addr()).write(order);
+                let _sc_fence = ScFenceGuard::new(order == Ordering::SeqCst);
+                let guard = lock(self.v.get().addr()).write();
                 let prev = self.read(&guard);
                 self.write(prev.wrapping_sub(val), &guard);
                 prev
@@ -429,7 +448,8 @@ macro_rules! atomic {
 
             #[inline]
             pub(crate) fn fetch_and(&self, val: $int_type, order: Ordering) -> $int_type {
-                let guard = lock(self.v.get().addr()).write(order);
+                let _sc_fence = ScFenceGuard::new(order == Ordering::SeqCst);
+                let guard = lock(self.v.get().addr()).write();
                 let prev = self.read(&guard);
                 self.write(prev & val, &guard);
                 prev
@@ -437,7 +457,8 @@ macro_rules! atomic {
 
             #[inline]
             pub(crate) fn fetch_nand(&self, val: $int_type, order: Ordering) -> $int_type {
-                let guard = lock(self.v.get().addr()).write(order);
+                let _sc_fence = ScFenceGuard::new(order == Ordering::SeqCst);
+                let guard = lock(self.v.get().addr()).write();
                 let prev = self.read(&guard);
                 self.write(!(prev & val), &guard);
                 prev
@@ -445,7 +466,8 @@ macro_rules! atomic {
 
             #[inline]
             pub(crate) fn fetch_or(&self, val: $int_type, order: Ordering) -> $int_type {
-                let guard = lock(self.v.get().addr()).write(order);
+                let _sc_fence = ScFenceGuard::new(order == Ordering::SeqCst);
+                let guard = lock(self.v.get().addr()).write();
                 let prev = self.read(&guard);
                 self.write(prev | val, &guard);
                 prev
@@ -453,7 +475,8 @@ macro_rules! atomic {
 
             #[inline]
             pub(crate) fn fetch_xor(&self, val: $int_type, order: Ordering) -> $int_type {
-                let guard = lock(self.v.get().addr()).write(order);
+                let _sc_fence = ScFenceGuard::new(order == Ordering::SeqCst);
+                let guard = lock(self.v.get().addr()).write();
                 let prev = self.read(&guard);
                 self.write(prev ^ val, &guard);
                 prev
@@ -461,7 +484,8 @@ macro_rules! atomic {
 
             #[inline]
             pub(crate) fn fetch_not(&self, order: Ordering) -> $int_type {
-                let guard = lock(self.v.get().addr()).write(order);
+                let _sc_fence = ScFenceGuard::new(order == Ordering::SeqCst);
+                let guard = lock(self.v.get().addr()).write();
                 let prev = self.read(&guard);
                 self.write(!prev, &guard);
                 prev
@@ -469,7 +493,8 @@ macro_rules! atomic {
 
             #[inline]
             pub(crate) fn fetch_neg(&self, order: Ordering) -> $int_type {
-                let guard = lock(self.v.get().addr()).write(order);
+                let _sc_fence = ScFenceGuard::new(order == Ordering::SeqCst);
+                let guard = lock(self.v.get().addr()).write();
                 let prev = self.read(&guard);
                 self.write(prev.wrapping_neg(), &guard);
                 prev
@@ -478,7 +503,8 @@ macro_rules! atomic {
         impl $atomic_type {
             #[inline]
             pub(crate) fn fetch_max(&self, val: $int_type, order: Ordering) -> $int_type {
-                let guard = lock(self.v.get().addr()).write(order);
+                let _sc_fence = ScFenceGuard::new(order == Ordering::SeqCst);
+                let guard = lock(self.v.get().addr()).write();
                 let prev = self.read(&guard);
                 self.write(core::cmp::max(prev, val), &guard);
                 prev
@@ -486,7 +512,8 @@ macro_rules! atomic {
 
             #[inline]
             pub(crate) fn fetch_min(&self, val: $int_type, order: Ordering) -> $int_type {
-                let guard = lock(self.v.get().addr()).write(order);
+                let _sc_fence = ScFenceGuard::new(order == Ordering::SeqCst);
+                let guard = lock(self.v.get().addr()).write();
                 let prev = self.read(&guard);
                 self.write(core::cmp::min(prev, val), &guard);
                 prev
@@ -525,10 +552,10 @@ macro_rules! atomic {
         ))
     ))
 )]
-cfg_no_fast_atomic_64! {
+cfg_no_fast_atomic_64!({
     atomic!(AtomicI64, i64, 8);
     atomic!(AtomicU64, u64, 8);
-}
+});
 
 atomic!(AtomicI128, i128, 16);
 atomic!(AtomicU128, u128, 16);
@@ -537,17 +564,17 @@ atomic!(AtomicU128, u128, 16);
 mod tests {
     use super::*;
 
-    cfg_no_fast_atomic_64! {
+    cfg_no_fast_atomic_64!({
         test_atomic_int!(i64);
         test_atomic_int!(u64);
-    }
+    });
     test_atomic_int!(i128);
     test_atomic_int!(u128);
 
     // load/store/swap implementation is not affected by signedness, so it is
     // enough to test only unsigned types.
-    cfg_no_fast_atomic_64! {
+    cfg_no_fast_atomic_64!({
         stress_test!(u64);
-    }
+    });
     stress_test!(u128);
 }

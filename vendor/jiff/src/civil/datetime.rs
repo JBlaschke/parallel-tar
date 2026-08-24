@@ -1,5 +1,7 @@
 use core::time::Duration as UnsignedDuration;
 
+use jcore::{bounds::Sign, civil::DateTime as JDateTime, constants as c};
+
 use crate::{
     civil::{
         datetime, Date, DateWith, Era, ISOWeekDate, Time, TimeWith, Weekday,
@@ -10,13 +12,8 @@ use crate::{
         self,
         temporal::{self, DEFAULT_DATETIME_PARSER},
     },
-    shared::util::itime::IDateTime,
     tz::TimeZone,
-    util::{
-        rangeint::{Composite, RFrom, RInto},
-        round::increment,
-        t::{self, C},
-    },
+    util::round::Increment,
     zoned::Zoned,
     RoundMode, SignedDuration, Span, SpanRound, Unit,
 };
@@ -1569,7 +1566,7 @@ impl DateTime {
                 (offset, ts, dt)
             }
         };
-        Ok(Zoned::from_parts(ts, tz, offset, dt))
+        Ok(Zoned::from_parts(ts, dt, offset, tz))
     }
 
     /// Add the given span of time to this datetime. If the sum would overflow
@@ -1688,7 +1685,7 @@ impl DateTime {
     }
 
     #[inline]
-    fn checked_add_span(self, span: Span) -> Result<DateTime, Error> {
+    fn checked_add_span(self, span: &Span) -> Result<DateTime, Error> {
         let (old_date, old_time) = (self.date(), self.time());
         let units = span.units();
         match (units.only_calendar().is_empty(), units.only_time().is_empty())
@@ -1709,7 +1706,7 @@ impl DateTime {
                     .context(E::FailedAddSpanOverflowing)?;
                 Ok(DateTime::from_parts(new_date, new_time))
             }
-            (false, false) => self.checked_add_span_general(&span),
+            (false, false) => self.checked_add_span_general(span),
         }
     }
 
@@ -1721,7 +1718,7 @@ impl DateTime {
         let span_time = span.only_lower(Unit::Day);
 
         let (new_time, leftovers) = old_time
-            .overflowing_add(span_time)
+            .overflowing_add(&span_time)
             .context(E::FailedAddSpanTime)?;
         let new_date =
             old_date.checked_add(span_date).context(E::FailedAddSpanDate)?;
@@ -2367,31 +2364,25 @@ impl DateTime {
     /// Converts this datetime to a nanosecond timestamp assuming a Zulu time
     /// zone offset and where all days are exactly 24 hours long.
     #[inline]
-    fn to_nanosecond(self) -> t::NoUnits128 {
-        let day_nano = self.date().to_unix_epoch_day();
-        let time_nano = self.time().to_nanosecond();
-        (t::NoUnits128::rfrom(day_nano) * t::NANOS_PER_CIVIL_DAY) + time_nano
+    fn to_duration(self) -> SignedDuration {
+        let mut dur = SignedDuration::from_civil_days32(
+            self.date().to_unix_epoch_day().day(),
+        );
+        dur += self.time().to_duration();
+        dur
     }
 
     #[inline]
-    pub(crate) fn to_idatetime(&self) -> Composite<IDateTime> {
-        let idate = self.date().to_idate();
-        let itime = self.time().to_itime();
-        idate.zip2(itime).map(|(date, time)| IDateTime { date, time })
+    pub(crate) const fn from_jcore(dt: JDateTime) -> DateTime {
+        DateTime::from_parts(
+            Date::from_jcore(dt.date()),
+            Time::from_jcore(dt.time()),
+        )
     }
 
     #[inline]
-    pub(crate) fn from_idatetime(idt: Composite<IDateTime>) -> DateTime {
-        let (idate, itime) = idt.map(|idt| (idt.date, idt.time)).unzip2();
-        DateTime::from_parts(Date::from_idate(idate), Time::from_itime(itime))
-    }
-
-    #[inline]
-    pub(crate) const fn to_idatetime_const(&self) -> IDateTime {
-        IDateTime {
-            date: self.date.to_idate_const(),
-            time: self.time.to_itime_const(),
-        }
+    pub(crate) const fn to_jcore(&self) -> JDateTime {
+        JDateTime::from_parts(self.date.to_jcore(), self.time.to_jcore())
     }
 }
 
@@ -2442,11 +2433,14 @@ impl DateTime {
     ///
     /// # Errors and panics
     ///
-    /// While this routine itself does not error or panic, using the value
-    /// returned may result in a panic if formatting fails. See the
-    /// documentation on [`fmt::strtime::Display`] for more information.
+    /// This will never error or panic. In particular,
+    /// [lenient mode](crate::fmt::strtime::Config::lenient) is enabled, which
+    /// means that all possible strings have some non-error interpretation.
+    /// Note that because of this, and since Jiff may add new conversion
+    /// specifiers in the future, the behavior of a format string may change
+    /// when it would otherwise be invalid.
     ///
-    /// To format in a way that surfaces errors without panicking, use either
+    /// To format in a way that surfaces errors, use either
     /// [`fmt::strtime::format`] or [`fmt::strtime::BrokenDownTime::format`].
     ///
     /// # Example
@@ -2459,6 +2453,33 @@ impl DateTime {
     /// let dt = date(2024, 7, 15).at(16, 24, 59, 0);
     /// let string = dt.strftime("%A, %B %e, %Y at %H:%M:%S").to_string();
     /// assert_eq!(string, "Monday, July 15, 2024 at 16:24:59");
+    /// ```
+    ///
+    /// # Example: errors are silently ignored
+    ///
+    /// If the formatting string is malformed in some way, then it is silently
+    /// ignored. For example, when using an invalid formatting directive:
+    ///
+    /// ```
+    /// use jiff::civil::date;
+    ///
+    /// let dt = date(2024, 7, 15).at(16, 24, 59, 0);
+    /// let string = dt.strftime("%Y %").to_string();
+    /// assert_eq!(string, "2024 %");
+    /// ```
+    ///
+    /// If one wants to surface errors from a formatting string, use a lower
+    /// level API:
+    ///
+    /// ```
+    /// use jiff::civil::date;
+    ///
+    /// let dt = date(2024, 7, 15).at(16, 24, 59, 0);
+    /// assert_eq!(
+    ///     jiff::fmt::strtime::format("%Y %", dt).unwrap_err().to_string(),
+    ///     "strftime formatting failed: invalid format string, \
+    ///      expected byte after `%`, but found end of format string",
+    /// );
     /// ```
     #[inline]
     pub fn strftime<'f, F: 'f + ?Sized + AsRef<[u8]>>(
@@ -2765,6 +2786,17 @@ impl core::ops::SubAssign<UnsignedDuration> for DateTime {
     #[inline]
     fn sub_assign(&mut self, rhs: UnsignedDuration) {
         *self = *self - rhs
+    }
+}
+
+#[cfg(feature = "defmt")]
+impl defmt::Format for DateTime {
+    fn format(&self, f: defmt::Formatter) {
+        use crate::fmt::{temporal::DEFAULT_DATETIME_PRINTER, DefmtWrite};
+
+        defmt::unwrap!(
+            DEFAULT_DATETIME_PRINTER.print_datetime(self, DefmtWrite(f))
+        );
     }
 }
 
@@ -3187,6 +3219,9 @@ impl DateTimeDifference {
     /// Namely, any integer that divides evenly into `1,000` nanoseconds since
     /// there are `1,000` nanoseconds in the next highest unit (microseconds).
     ///
+    /// In all cases, the increment must be greater than zero and less than
+    /// or equal to `1_000_000_000`.
+    ///
     /// The error will occur when computing the span, and not when setting
     /// the increment here.
     ///
@@ -3222,7 +3257,7 @@ impl DateTimeDifference {
     /// via rounding.
     #[inline]
     fn rounding_may_change_span(&self) -> bool {
-        self.round.rounding_may_change_span_ignore_largest()
+        self.round.rounding_may_change_span()
     }
 
     /// Returns the span of time from `dt1` to the datetime in this
@@ -3236,47 +3271,50 @@ impl DateTimeDifference {
             .get_largest()
             .unwrap_or_else(|| self.round.get_smallest().max(Unit::Day));
         if largest <= Unit::Day {
-            let diff = dt2.to_nanosecond() - dt1.to_nanosecond();
+            let diff = dt2.to_duration() - dt1.to_duration();
             // Note that this can fail! If largest unit is nanoseconds and the
             // datetimes are far enough apart, a single i64 won't be able to
             // represent the time difference.
             //
             // This is only true for nanoseconds. A single i64 in units of
             // microseconds can represent the interval between all valid
-            // datetimes. (At time of writing.)
-            return Span::from_invariant_nanoseconds(largest, diff);
+            // datetimes.
+            return Span::from_invariant_duration(largest, diff);
         }
 
         let (d1, mut d2) = (dt1.date(), dt2.date());
         let (t1, t2) = (dt1.time(), dt2.time());
-        let sign = t::sign(d2, d1);
+        let sign = Sign::from_ordinals(d2, d1);
         let mut time_diff = t1.until_nanoseconds(t2);
-        if time_diff.signum() == -sign {
+        if Sign::from(time_diff) == -sign {
             // These unwraps will always succeed, but the argument for why is
             // subtle. The key here is that the only way, e.g., d2.tomorrow()
             // can fail is when d2 is the max date. But, if d2 is the max date,
             // then it's impossible for `sign < 0` since the max date is at
             // least as big as every other date. And thus, d2.tomorrow() is
             // never reached in cases where it would fail.
-            if sign > C(0) {
+            if sign.is_positive() {
                 d2 = d2.yesterday().unwrap();
-            } else if sign < C(0) {
+            } else if sign.is_negative() {
                 d2 = d2.tomorrow().unwrap();
             }
-            time_diff +=
-                t::SpanNanoseconds::rfrom(t::NANOS_PER_CIVIL_DAY) * sign;
+            time_diff += c::NANOS_PER_CIVIL_DAY * sign;
         }
         let date_span = d1.until((largest, d2))?;
-        Ok(Span::from_invariant_nanoseconds(largest, time_diff.rinto())
-            // Unlike in the <=Unit::Day case, this always succeeds because
-            // every unit except for nanoseconds (which is not used here) can
-            // represent all possible spans of time between any two civil
-            // datetimes.
-            .expect("difference between time always fits in span")
-            .years_ranged(date_span.get_years_ranged())
-            .months_ranged(date_span.get_months_ranged())
-            .weeks_ranged(date_span.get_weeks_ranged())
-            .days_ranged(date_span.get_days_ranged()))
+        // Unlike in the <=Unit::Day case, this always succeeds because
+        // every unit except for nanoseconds (which is not used here) can
+        // represent all possible spans of time between any two civil
+        // datetimes.
+        let time_span = Span::from_invariant_duration(
+            largest,
+            SignedDuration::from_nanos(time_diff),
+        )
+        .expect("difference between time always fits in span");
+        Ok(time_span
+            .years(date_span.get_years())
+            .months(date_span.get_months())
+            .weeks(date_span.get_weeks())
+            .days(date_span.get_days()))
     }
 }
 
@@ -3497,6 +3535,9 @@ impl DateTimeRound {
     /// Namely, any integer that divides evenly into `1,000` nanoseconds since
     /// there are `1,000` nanoseconds in the next highest unit (microseconds).
     ///
+    /// In all cases, the increment must be greater than zero and less than or
+    /// equal to `1_000_000_000`.
+    ///
     /// # Example
     ///
     /// This example shows how to round a datetime to the nearest 10 minute
@@ -3527,57 +3568,40 @@ impl DateTimeRound {
     pub(crate) fn round(&self, dt: DateTime) -> Result<DateTime, Error> {
         // ref: https://tc39.es/proposal-temporal/#sec-temporal.plaindatetime.prototype.round
 
-        let increment =
-            increment::for_datetime(self.smallest, self.increment)?;
-        // We permit rounding to any time unit and days, but nothing else.
-        // We should support this, but Temporal doesn't. So for now, we're
-        // sticking to what Temporal does because they're probably not doing
-        // it for good reasons.
-        match self.smallest {
-            Unit::Year | Unit::Month | Unit::Week => {
-                return Err(Error::from(
-                    crate::error::util::RoundingIncrementError::Unsupported {
-                        unit: self.smallest,
-                    },
-                ));
-            }
-            // We don't do any rounding in this case, so just bail now.
-            Unit::Nanosecond if increment == C(1) => {
-                return Ok(dt);
-            }
-            _ => {}
+        // We don't do any rounding in this case and there are no possible
+        // error conditions under this configuration. So just bail.
+        if self.smallest == Unit::Nanosecond && self.increment == 1 {
+            return Ok(dt);
         }
 
-        let time_nanos = dt.time().to_nanosecond();
-        let sign = t::NoUnits128::rfrom(dt.date().year_ranged().signum());
-        let time_rounded = self.mode.round_by_unit_in_nanoseconds(
-            time_nanos,
-            self.smallest,
-            increment,
-        );
-        let days = sign * time_rounded.div_ceil(t::NANOS_PER_CIVIL_DAY);
-        let time_nanos = time_rounded.rem_ceil(t::NANOS_PER_CIVIL_DAY);
-        let time = Time::from_nanosecond(time_nanos.rinto());
+        let increment =
+            Increment::for_datetime(self.smallest, self.increment)?;
+        let time_nanos = dt.time().to_duration();
+        let sign = Sign::from(dt.date().year());
+        let time_rounded = increment.round(self.mode, time_nanos)?;
+        let (days, time_nanos) = time_rounded.as_civil_days_with_remainder();
+        // OK because `abs(days)` here can never be greater than 1. Namely,
+        // rounding time increments are limited to values that divide evenly
+        // into the corresponding maximal value. And a `day` increment is
+        // limited to `1`. So even starting with the maximal `dt.time()` value
+        // (the last nanosecond in a civil day), we can never round past 1 day.
+        let days = sign * days;
+        // OK because `time_nanos` is guaranteed to be less than a single full
+        // civil day.
+        let time = Time::from_duration(time_nanos).unwrap();
 
-        let date_days = t::SpanDays::rfrom(dt.date().day_ranged());
-        // OK because days is limited by the fact that the length of a day
-        // can't be any smaller than 1 second, and the number of nanoseconds in
-        // a civil day is capped.
-        let days_len = (date_days - C(1)) + days;
-        // OK because the first day of any month is always valid.
+        // OK because `abs(days) <= 1` (see above comment) and
+        // `dt.date().day()` can never exceed `31`. So the result always fits
+        // into an `i64`.
+        let days_len = (i64::from(dt.date().day()) - 1) + days;
         let start = dt.date().first_of_month();
-        // `days` should basically always be <= 1, and so `days_len` should
-        // always be at most 1 greater (or less) than where we started. But
-        // what if there is a time zone transition that makes 9999-12-31
-        // shorter than 24 hours? And we are rounding 9999-12-31? Well, then
-        // I guess this could overflow and fail. I suppose it could also fail
-        // for really weird time zone data that made the length of a day really
-        // short. But even then, you'd need to be close to the boundary of
-        // supported datetimes.
-        let end = start
-            .checked_add(Span::new().days_ranged(days_len))
+        // `abs(days)` is always <= 1, and so `days_len` should
+        // always be at most 1 greater (or less) than where we started. If we
+        // started at, e.g., `DateTime::MAX`, then this could overflow.
+        let date = start
+            .checked_add(Span::new().days(days_len))
             .context(E::FailedAddDays)?;
-        Ok(DateTime::from_parts(end, time))
+        Ok(DateTime::from_parts(date, time))
     }
 
     pub(crate) fn get_smallest(&self) -> Unit {
@@ -4518,7 +4542,7 @@ mod tests {
     fn datetime_size() {
         #[cfg(debug_assertions)]
         {
-            assert_eq!(36, core::mem::size_of::<DateTime>());
+            assert_eq!(12, core::mem::size_of::<DateTime>());
         }
         #[cfg(not(debug_assertions))]
         {

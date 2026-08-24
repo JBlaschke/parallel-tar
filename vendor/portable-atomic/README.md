@@ -17,14 +17,14 @@ Portable atomic types including support for 128-bit atomics, atomic float, etc.
 - Provide atomic load/store for targets where atomic is not available at all in the standard library. (RISC-V without A-extension, MSP430, AVR)
 - Provide atomic CAS for targets where atomic CAS is not available in the standard library. (thumbv6m, pre-v6 Arm, RISC-V without A-extension, MSP430, AVR, Xtensa, etc.) (always enabled for MSP430 and AVR, [optional](#optional-features-critical-section) otherwise)
 - Make features that require newer compilers, such as [`fetch_{max,min}`](https://doc.rust-lang.org/std/sync/atomic/struct.AtomicUsize.html#method.fetch_max), [`fetch_update`](https://doc.rust-lang.org/std/sync/atomic/struct.AtomicUsize.html#method.fetch_update), [`as_ptr`](https://doc.rust-lang.org/std/sync/atomic/struct.AtomicUsize.html#method.as_ptr), [`from_ptr`](https://doc.rust-lang.org/std/sync/atomic/struct.AtomicUsize.html#method.from_ptr), [`AtomicBool::fetch_not`](https://doc.rust-lang.org/std/sync/atomic/struct.AtomicBool.html#method.fetch_not), [`AtomicPtr::fetch_*`](https://doc.rust-lang.org/std/sync/atomic/struct.AtomicPtr.html#method.fetch_and), and [stronger CAS failure ordering](https://github.com/rust-lang/rust/pull/98383) available on Rust 1.34+.
-- Provide workaround for bugs in the standard library's atomic-related APIs, such as [rust-lang/rust#100650], `fence`/`compiler_fence` on MSP430 that cause LLVM error, etc.
+- Provide workaround for bugs in the standard library's atomic-related APIs, such as [rust-lang/compiler-builtins#1234], [rust-lang/rust#100650], `fence`/`compiler_fence` on MSP430 that cause LLVM error, etc.
 
 <!-- TODO:
 - mention Atomic{I,U}*::fetch_neg, Atomic{I*,U*,Ptr}::bit_*, etc.
 - mention optimizations not available in the standard library's equivalents
 -->
 
-portable-atomic version of `std::sync::Arc` is provided by the [portable-atomic-util](https://github.com/taiki-e/portable-atomic/tree/HEAD/portable-atomic-util) crate.
+portable-atomic version of `std::sync::Arc` and `std::task::Wake` is provided by the [portable-atomic-util] crate.
 
 ## Usage
 
@@ -54,7 +54,7 @@ portable-atomic = { version = "1.3", default-features = false, features = ["requ
 
 ## 128-bit atomics support
 
-Native 128-bit atomic operations are available on x86_64 (Rust 1.59+), AArch64 (Rust 1.59+), riscv64 (Rust 1.59+), Arm64EC (Rust 1.84+), s390x (Rust 1.84+), and powerpc64 (nightly only), otherwise the fallback implementation is used.
+Native 128-bit atomic operations are available on x86_64 (Rust 1.59+), AArch64 (Rust 1.59+), riscv64 (Rust 1.59+), Arm64EC (Rust 1.84+), s390x (Rust 1.84+), and powerpc64 (Rust 1.95+), otherwise the fallback implementation is used.
 
 On x86_64, even if `cmpxchg16b` is not available at compile-time (Note: `cmpxchg16b` target feature is enabled by default only on Apple, Windows (except Windows 7), and Fuchsia targets), run-time detection checks whether `cmpxchg16b` is available. If `cmpxchg16b` is not available at either compile-time or run-time detection, the fallback implementation is used. See also [`portable_atomic_no_outline_atomics`](#optional-cfg-no-outline-atomics) cfg.
 
@@ -90,7 +90,7 @@ RUSTFLAGS="--cfg portable_atomic_unsafe_assume_single_core" cargo ...
 - <a name="optional-features-fallback"></a>**`fallback` feature** *(enabled by default)*<br>
   Enable fallback implementations.
 
-  This enables atomic types with larger than the width supported by atomic instructions available on the current target. If the current target supports 128-bit atomics, this is no-op.
+  This enables atomic types with larger than the width supported by atomic instructions available on the current target. If the current target [supports 128-bit atomics](#128-bit-atomics-support), this is no-op.
 
   This uses fallback implementation that using global locks by default. The following features/cfgs change this behavior:
   - [`unsafe-assume-single-core` feature / `portable_atomic_unsafe_assume_single_core` cfg](#optional-features-unsafe-assume-single-core): Use fallback implementations that disabling interrupts instead of using global locks.
@@ -135,7 +135,7 @@ RUSTFLAGS="--cfg portable_atomic_unsafe_assume_single_core" cargo ...
 >
 >   The recommended approach for libraries is to leave it up to the end user whether or not to enable this feature. (However, it may make sense to enable this feature by default for libraries specific to a platform where other implementations are known not to work.)
 >
->   See also [](https://github.com/matklad/once_cell/issues/264#issuecomment-2352654806).
+>   See also [this comment](https://github.com/matklad/once_cell/issues/264#issuecomment-2352654806).
 >
 >   As an example, the end-user's `Cargo.toml` that uses a crate that provides a critical-section implementation and a crate that depends on portable-atomic as an option would be expected to look like this:
 >
@@ -219,17 +219,22 @@ See also the [`interrupt` module's readme](https://github.com/taiki-e/portable-a
 > - This is compatible with no-std (as with all features except `std`).
 > - On some targets, run-time detection is disabled by default mainly for compatibility with incomplete build environments or support for it is experimental, and can be enabled by `portable_atomic_outline_atomics` cfg. (When both cfg are enabled, `*_no_*` cfg is preferred.)
 > - Some AArch64 targets enable LLVM's `outline-atomics` target feature by default, so if you set this cfg, you may want to disable that as well. (However, portable-atomic's outline-atomics does not depend on the compiler-rt symbols, so even if you need to disable LLVM's outline-atomics, you may not need to disable portable-atomic's outline-atomics.)
-> - Dynamic detection is currently only supported in x86_64, AArch64, Arm, RISC-V, Arm64EC, and powerpc64. Enabling this cfg for unsupported architectures will result in a compile error.
+> - Dynamic detection is currently only supported in x86_64, AArch64, Arm, RISC-V, Arm64EC, and powerpc64. Enabling this cfg for unsupported architectures will be ignored.
 
 ## Related Projects
 
+- [portable-atomic-util]: Synchronization primitives built with portable-atomic. This provides portable-atomic version of `std::sync::Arc` and `std::task::Wake`.
 - [atomic-maybe-uninit]: Atomic operations on potentially uninitialized integers.
 - [atomic-memcpy]: Byte-wise atomic memcpy.
+- [asmtest]: A library for tracking generated assemblies.
 
 [#60]: https://github.com/taiki-e/portable-atomic/issues/60
+[asmtest]: https://github.com/taiki-e/asmtest
 [atomic-maybe-uninit]: https://github.com/taiki-e/atomic-maybe-uninit
 [atomic-memcpy]: https://github.com/taiki-e/atomic-memcpy
 [critical-section]: https://github.com/rust-embedded/critical-section
+[portable-atomic-util]: https://github.com/taiki-e/portable-atomic-util
+[rust-lang/compiler-builtins#1234]: https://github.com/rust-lang/compiler-builtins/pull/1234
 [rust-lang/rust#100650]: https://github.com/rust-lang/rust/issues/100650
 [serde]: https://github.com/serde-rs/serde
 

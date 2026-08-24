@@ -1,10 +1,10 @@
 use crate::error;
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub(crate) enum Error {
     OverflowAddDuration,
     OverflowAddSpan,
-    RequiresSaturatingTimeUnits,
 }
 
 impl From<Error> for error::Error {
@@ -30,9 +30,6 @@ impl core::fmt::Display for Error {
                 f.write_str("adding duration overflowed timestamp")
             }
             OverflowAddSpan => f.write_str("adding span overflowed timestamp"),
-            RequiresSaturatingTimeUnits => f.write_str(
-                "saturating timestamp arithmetic requires only time units",
-            ),
         }
     }
 }

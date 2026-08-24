@@ -1,14 +1,14 @@
-use crate::{error, util::escape::Byte, Unit};
+use crate::{error, util::escape::Byte};
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub(crate) enum RoundingIncrementError {
     ForDateTime,
+    ForOffset,
+    ForSignedDuration,
     ForSpan,
     ForTime,
     ForTimestamp,
-    GreaterThanZero { unit: Unit },
-    InvalidDivide { unit: Unit, must_divide: i64 },
-    Unsupported { unit: Unit },
 }
 
 impl From<RoundingIncrementError> for error::Error {
@@ -31,31 +31,19 @@ impl core::fmt::Display for RoundingIncrementError {
 
         match *self {
             ForDateTime => f.write_str("failed rounding datetime"),
+            ForOffset => f.write_str("failed rounding time zone offset"),
+            ForSignedDuration => {
+                f.write_str("failed rounding signed duration")
+            }
             ForSpan => f.write_str("failed rounding span"),
             ForTime => f.write_str("failed rounding time"),
             ForTimestamp => f.write_str("failed rounding timestamp"),
-            GreaterThanZero { unit } => write!(
-                f,
-                "rounding increment for {unit} must be greater than zero",
-                unit = unit.plural(),
-            ),
-            InvalidDivide { unit, must_divide } => write!(
-                f,
-                "increment for rounding to {unit} \
-                 must be 1) less than {must_divide}, 2) divide into \
-                 it evenly and 3) greater than zero",
-                unit = unit.plural(),
-            ),
-            Unsupported { unit } => write!(
-                f,
-                "rounding to {unit} is not supported",
-                unit = unit.plural(),
-            ),
         }
     }
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub(crate) enum ParseIntError {
     NoDigitsFound,
     InvalidDigit(u8),
@@ -93,6 +81,7 @@ impl core::fmt::Display for ParseIntError {
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub(crate) enum ParseFractionError {
     NoDigitsFound,
     TooManyDigits,
@@ -190,5 +179,14 @@ impl core::fmt::Display for OsStrUtf8Error {
         {
             write!(f, "<BUG: SHOULD NOT EXIST>")
         }
+    }
+}
+
+#[cfg(feature = "defmt")]
+impl defmt::Format for OsStrUtf8Error {
+    fn format(&self, f: defmt::Formatter) {
+        // `OsStr` does not implement `defmt::Format`. Since this error is std-only
+        // and defmt is mainly used in embedded contexts, omitting the value is fine.
+        defmt::write!(f, "OsStrUtf8Error(unavailable)");
     }
 }

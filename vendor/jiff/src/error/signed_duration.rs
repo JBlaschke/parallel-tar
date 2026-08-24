@@ -1,10 +1,10 @@
 use crate::{error, Unit};
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub(crate) enum Error {
     ConvertNonFinite,
     ConvertSystemTime,
-    RoundCalendarUnit { unit: Unit },
     RoundOverflowed { unit: Unit },
 }
 
@@ -35,13 +35,6 @@ impl core::fmt::Display for Error {
             ConvertSystemTime => f.write_str(
                 "failed to get duration between \
                  `std::time::SystemTime` values",
-            ),
-            RoundCalendarUnit { unit } => write!(
-                f,
-                "rounding `jiff::SignedDuration` failed because \
-                 a calendar unit of '{plural}' was provided \
-                 (to round by calendar units, you must use a `jiff::Span`)",
-                plural = unit.plural(),
             ),
             RoundOverflowed { unit } => write!(
                 f,

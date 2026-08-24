@@ -1,10 +1,10 @@
 use crate::{
     error,
     tz::{Offset, TimeZone},
-    Unit,
 };
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub(crate) enum Error {
     ConvertDateTimeToTimestamp {
         offset: Offset,
@@ -27,9 +27,6 @@ pub(crate) enum Error {
         given: Offset,
         offset: Offset,
         tz: TimeZone,
-    },
-    RoundInvalidUnit {
-        unit: Unit,
     },
     RoundOverflow,
 }
@@ -92,14 +89,6 @@ impl core::fmt::Display for Error {
                  zone `{tzname}` for the given datetime \
                  unambiguously has offset `{offset}`",
                 tzname = tz.diagnostic_name(),
-            ),
-            RoundInvalidUnit { unit } => write!(
-                f,
-                "rounding time zone offset failed because \
-                 a unit of {unit} was provided, \
-                 but time zone offset rounding \
-                 can only use hours, minutes or seconds",
-                unit = unit.plural(),
             ),
             RoundOverflow => f.write_str(
                 "rounding time zone offset resulted in a duration \

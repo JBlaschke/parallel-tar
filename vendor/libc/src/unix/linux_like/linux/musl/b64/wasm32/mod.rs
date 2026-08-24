@@ -6,8 +6,6 @@ use crate::prelude::*;
 pub type wchar_t = i32;
 pub type nlink_t = u64;
 pub type blksize_t = c_long;
-pub type __u64 = c_ulonglong;
-pub type __s64 = c_longlong;
 
 pub type stat64 = stat;
 
@@ -24,27 +22,12 @@ s! {
         pub st_size: off_t,
         pub st_blksize: crate::blksize_t,
         pub st_blocks: crate::blkcnt_t,
-
-        #[cfg(not(musl_v1_2_3))]
         pub st_atime: crate::time_t,
-        #[cfg(not(musl_v1_2_3))]
         pub st_atime_nsec: c_long,
-        #[cfg(not(musl_v1_2_3))]
         pub st_mtime: crate::time_t,
-        #[cfg(not(musl_v1_2_3))]
         pub st_mtime_nsec: c_long,
-        #[cfg(not(musl_v1_2_3))]
         pub st_ctime: crate::time_t,
-        #[cfg(not(musl_v1_2_3))]
         pub st_ctime_nsec: c_long,
-
-        #[cfg(musl_v1_2_3)]
-        pub st_atim: crate::timespec,
-        #[cfg(musl_v1_2_3)]
-        pub st_mtim: crate::timespec,
-        #[cfg(musl_v1_2_3)]
-        pub st_ctim: crate::timespec,
-
         __unused: Padding<[c_long; 3]>,
     }
 

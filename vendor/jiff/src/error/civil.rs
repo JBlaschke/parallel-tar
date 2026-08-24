@@ -1,6 +1,7 @@
-use crate::{error, Unit};
+use crate::error;
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub(crate) enum Error {
     FailedAddDays,
     FailedAddDurationOverflowing,
@@ -10,11 +11,8 @@ pub(crate) enum Error {
     IllegalTimeWithMicrosecond,
     IllegalTimeWithMillisecond,
     IllegalTimeWithNanosecond,
-    InvalidISOWeekNumber,
     OverflowDaysDuration,
     OverflowTimeNanoseconds,
-    RoundMustUseDaysOrBigger { unit: Unit },
-    RoundMustUseHoursOrSmaller { unit: Unit },
 }
 
 impl From<Error> for error::Error {
@@ -57,9 +55,6 @@ impl core::fmt::Display for Error {
                 "cannot set both `TimeWith::nanosecond` \
                  and `TimeWith::subsec_nanosecond`",
             ),
-            InvalidISOWeekNumber => {
-                f.write_str("ISO week number is invalid for given year")
-            }
             OverflowDaysDuration => f.write_str(
                 "number of days derived from duration exceed's \
                  Jiff's datetime limits",
@@ -67,18 +62,6 @@ impl core::fmt::Display for Error {
             OverflowTimeNanoseconds => {
                 f.write_str("adding duration to time overflowed")
             }
-            RoundMustUseDaysOrBigger { unit } => write!(
-                f,
-                "rounding the span between two dates must use days \
-                 or bigger for its units, but found {unit}",
-                unit = unit.plural(),
-            ),
-            RoundMustUseHoursOrSmaller { unit } => write!(
-                f,
-                "rounding the span between two times must use hours \
-                 or smaller for its units, but found {unit}",
-                unit = unit.plural(),
-            ),
         }
     }
 }

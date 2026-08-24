@@ -279,20 +279,16 @@ use crate::{
     error::{fmt::strtime::Error as E, ErrorContext},
     fmt::{
         buffer::{ArrayBuffer, BorrowedWriter},
-        strtime::{format::Formatter, parse::Parser},
+        strtime::{parse::Parser, printer::Formatter},
         Write,
     },
     tz::{Offset, OffsetConflict, TimeZone, TimeZoneDatabase},
-    util::{
-        self, escape,
-        rangeint::RInto,
-        t::{self, C},
-    },
+    util::{self, b, escape},
     Error, Timestamp, Zoned,
 };
 
-mod format;
 mod parse;
+mod printer;
 
 /// Parse the given `input` according to the given `format` string.
 ///
@@ -672,11 +668,15 @@ pub trait Custom: Sized {
     fn format_datetime<W: Write>(
         &self,
         config: &Config<Self>,
-        _ext: &Extension,
+        ext: &Extension,
         tm: &BrokenDownTime,
         wtr: &mut W,
     ) -> Result<(), Error> {
-        tm.format_with_config(config, "%Y M%m %-d, %a %H:%M:%S", wtr)
+        if matches!(ext.flag, Some(Flag::Uppercase)) {
+            tm.format_with_config(config, "%Y M%m %-d, %^a %H:%M:%S", wtr)
+        } else {
+            tm.format_with_config(config, "%Y M%m %-d, %a %H:%M:%S", wtr)
+        }
     }
 
     /// Called when formatting a datetime with the `%x` flag.
@@ -712,11 +712,15 @@ pub trait Custom: Sized {
     fn format_12hour_time<W: Write>(
         &self,
         config: &Config<Self>,
-        _ext: &Extension,
+        ext: &Extension,
         tm: &BrokenDownTime,
         wtr: &mut W,
     ) -> Result<(), Error> {
-        tm.format_with_config(config, "%-I:%M:%S %p", wtr)
+        if matches!(ext.flag, Some(Flag::Uppercase)) {
+            tm.format_with_config(config, "%-I:%M:%S %^p", wtr)
+        } else {
+            tm.format_with_config(config, "%-I:%M:%S %p", wtr)
+        }
     }
 }
 
@@ -795,11 +799,15 @@ impl Custom for PosixCustom {
     fn format_datetime<W: Write>(
         &self,
         config: &Config<Self>,
-        _ext: &Extension,
+        ext: &Extension,
         tm: &BrokenDownTime,
         wtr: &mut W,
     ) -> Result<(), Error> {
-        tm.format_with_config(config, "%a %b %e %H:%M:%S %Y", wtr)
+        if matches!(ext.flag, Some(Flag::Uppercase)) {
+            tm.format_with_config(config, "%^a %^b %e %H:%M:%S %Y", wtr)
+        } else {
+            tm.format_with_config(config, "%a %b %e %H:%M:%S %Y", wtr)
+        }
     }
 
     fn format_date<W: Write>(
@@ -825,11 +833,15 @@ impl Custom for PosixCustom {
     fn format_12hour_time<W: Write>(
         &self,
         config: &Config<Self>,
-        _ext: &Extension,
+        ext: &Extension,
         tm: &BrokenDownTime,
         wtr: &mut W,
     ) -> Result<(), Error> {
-        tm.format_with_config(config, "%I:%M:%S %p", wtr)
+        if matches!(ext.flag, Some(Flag::Uppercase)) {
+            tm.format_with_config(config, "%I:%M:%S %^p", wtr)
+        } else {
+            tm.format_with_config(config, "%I:%M:%S %p", wtr)
+        }
     }
 }
 
@@ -876,19 +888,20 @@ impl Custom for PosixCustom {
 // unit. For example, only `%M` doesn't fly. If you want to parse minutes, you
 // also have to parse hours.
 #[derive(Debug, Default)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct BrokenDownTime {
-    year: Option<t::Year>,
-    month: Option<t::Month>,
-    day: Option<t::Day>,
-    day_of_year: Option<t::DayOfYear>,
-    iso_week_year: Option<t::ISOYear>,
-    iso_week: Option<t::ISOWeek>,
-    week_sun: Option<t::WeekNum>,
-    week_mon: Option<t::WeekNum>,
-    hour: Option<t::Hour>,
-    minute: Option<t::Minute>,
-    second: Option<t::Second>,
-    subsec: Option<t::SubsecNanosecond>,
+    year: Option<i16>,
+    month: Option<i8>,
+    day: Option<i8>,
+    day_of_year: Option<i16>,
+    iso_week_year: Option<i16>,
+    iso_week: Option<i8>,
+    week_sun: Option<i8>,
+    week_mon: Option<i8>,
+    hour: Option<i8>,
+    minute: Option<i8>,
+    second: Option<i8>,
+    subsec: Option<i32>,
     offset: Option<Offset>,
     // Used to confirm that it is consistent
     // with the date given. It usually isn't
@@ -1712,8 +1725,7 @@ impl BrokenDownTime {
         else {
             return to_date(self);
         };
-        let date =
-            Date::new_ranged(year, month, day).context(E::InvalidDate)?;
+        let date = Date::new(year, month, day).context(E::InvalidDate)?;
         if let Some(weekday) = self.weekday {
             if weekday != date.weekday() {
                 return Err(Error::from(E::MismatchWeekday {
@@ -1728,28 +1740,23 @@ impl BrokenDownTime {
     #[inline]
     fn to_date_from_gregorian(
         &self,
-        year: t::Year,
+        year: i16,
     ) -> Result<Option<Date>, Error> {
         let (Some(month), Some(day)) = (self.month, self.day) else {
             return Ok(None);
         };
-        Ok(Some(Date::new_ranged(year, month, day).context(E::InvalidDate)?))
+        Ok(Some(Date::new(year, month, day).context(E::InvalidDate)?))
     }
 
     #[inline]
     fn to_date_from_day_of_year(
         &self,
-        year: t::Year,
+        year: i16,
     ) -> Result<Option<Date>, Error> {
         let Some(doy) = self.day_of_year else { return Ok(None) };
         Ok(Some({
-            let first =
-                Date::new_ranged(year, C(1).rinto(), C(1).rinto()).unwrap();
-            first
-                .with()
-                .day_of_year(doy.get())
-                .build()
-                .context(E::InvalidDate)?
+            let first = Date::new(year, 1, 1).unwrap();
+            first.with().day_of_year(doy).build().context(E::InvalidDate)?
         }))
     }
 
@@ -1760,23 +1767,18 @@ impl BrokenDownTime {
         else {
             return Ok(None);
         };
-        let wd =
-            ISOWeekDate::new_ranged(y, w, d).context(E::InvalidISOWeekDate)?;
+        let wd = ISOWeekDate::new(y, w, d).context(E::InvalidISOWeekDate)?;
         Ok(Some(wd.date()))
     }
 
     #[inline]
-    fn to_date_from_week_sun(
-        &self,
-        year: t::Year,
-    ) -> Result<Option<Date>, Error> {
+    fn to_date_from_week_sun(&self, year: i16) -> Result<Option<Date>, Error> {
         let (Some(week), Some(weekday)) = (self.week_sun, self.weekday) else {
             return Ok(None);
         };
         let week = i16::from(week);
         let wday = i16::from(weekday.to_sunday_zero_offset());
-        let first_of_year = Date::new_ranged(year, C(1).rinto(), C(1).rinto())
-            .context(E::InvalidDate)?;
+        let first_of_year = Date::new(year, 1, 1).context(E::InvalidDate)?;
         let first_sunday = first_of_year
             .nth_weekday_of_month(1, Weekday::Sunday)
             .map(|d| d.day_of_year())
@@ -1806,17 +1808,13 @@ impl BrokenDownTime {
     }
 
     #[inline]
-    fn to_date_from_week_mon(
-        &self,
-        year: t::Year,
-    ) -> Result<Option<Date>, Error> {
+    fn to_date_from_week_mon(&self, year: i16) -> Result<Option<Date>, Error> {
         let (Some(week), Some(weekday)) = (self.week_mon, self.weekday) else {
             return Ok(None);
         };
         let week = i16::from(week);
         let wday = i16::from(weekday.to_monday_zero_offset());
-        let first_of_year = Date::new_ranged(year, C(1).rinto(), C(1).rinto())
-            .context(E::InvalidDate)?;
+        let first_of_year = Date::new(year, 1, 1).context(E::InvalidDate)?;
         let first_monday = first_of_year
             .nth_weekday_of_month(1, Weekday::Monday)
             .map(|d| d.day_of_year())
@@ -1921,7 +1919,7 @@ impl BrokenDownTime {
     /// ```
     #[inline]
     pub fn to_time(&self) -> Result<Time, Error> {
-        let Some(hour) = self.hour_ranged() else {
+        let Some(hour) = self.hour() else {
             if self.minute.is_some() {
                 return Err(Error::from(E::MissingTimeHourForMinute));
             }
@@ -1933,25 +1931,25 @@ impl BrokenDownTime {
             }
             return Ok(Time::midnight());
         };
-        let Some(minute) = self.minute else {
+        let Some(minute) = self.minute() else {
             if self.second.is_some() {
                 return Err(Error::from(E::MissingTimeMinuteForSecond));
             }
             if self.subsec.is_some() {
                 return Err(Error::from(E::MissingTimeMinuteForFractional));
             }
-            return Ok(Time::new_ranged(hour, C(0), C(0), C(0)));
+            return Time::new(hour, 0, 0, 0);
         };
-        let Some(second) = self.second else {
+        let Some(second) = self.second() else {
             if self.subsec.is_some() {
                 return Err(Error::from(E::MissingTimeSecondForFractional));
             }
-            return Ok(Time::new_ranged(hour, minute, C(0), C(0)));
+            return Time::new(hour, minute, 0, 0);
         };
         let Some(subsec) = self.subsec else {
-            return Ok(Time::new_ranged(hour, minute, second, C(0)));
+            return Time::new(hour, minute, second, 0);
         };
-        Ok(Time::new_ranged(hour, minute, second, subsec))
+        Time::new(hour, minute, second, subsec)
     }
 
     /// Returns the parsed year, if available.
@@ -1992,7 +1990,7 @@ impl BrokenDownTime {
     /// ```
     #[inline]
     pub fn year(&self) -> Option<i16> {
-        self.year.map(|x| x.get())
+        self.year
     }
 
     /// Returns the parsed month, if available.
@@ -2017,7 +2015,7 @@ impl BrokenDownTime {
     /// ```
     #[inline]
     pub fn month(&self) -> Option<i8> {
-        self.month.map(|x| x.get())
+        self.month
     }
 
     /// Returns the parsed day, if available.
@@ -2056,7 +2054,7 @@ impl BrokenDownTime {
     /// ```
     #[inline]
     pub fn day(&self) -> Option<i8> {
-        self.day.map(|x| x.get())
+        self.day
     }
 
     /// Returns the parsed day of the year (1-366), if available.
@@ -2127,7 +2125,7 @@ impl BrokenDownTime {
     /// ```
     #[inline]
     pub fn day_of_year(&self) -> Option<i16> {
-        self.day_of_year.map(|x| x.get())
+        self.day_of_year
     }
 
     /// Returns the parsed ISO 8601 week-based year, if available.
@@ -2168,7 +2166,7 @@ impl BrokenDownTime {
     /// ```
     #[inline]
     pub fn iso_week_year(&self) -> Option<i16> {
-        self.iso_week_year.map(|x| x.get())
+        self.iso_week_year
     }
 
     /// Returns the parsed ISO 8601 week-based number, if available.
@@ -2194,7 +2192,7 @@ impl BrokenDownTime {
     /// ```
     #[inline]
     pub fn iso_week(&self) -> Option<i8> {
-        self.iso_week.map(|x| x.get())
+        self.iso_week
     }
 
     /// Returns the Sunday based week number.
@@ -2218,7 +2216,7 @@ impl BrokenDownTime {
     /// ```
     #[inline]
     pub fn sunday_based_week(&self) -> Option<i8> {
-        self.week_sun.map(|x| x.get())
+        self.week_sun
     }
 
     /// Returns the Monday based week number.
@@ -2242,7 +2240,7 @@ impl BrokenDownTime {
     /// ```
     #[inline]
     pub fn monday_based_week(&self) -> Option<i8> {
-        self.week_mon.map(|x| x.get())
+        self.week_mon
     }
 
     /// Returns the parsed hour, if available.
@@ -2280,11 +2278,6 @@ impl BrokenDownTime {
     /// ```
     #[inline]
     pub fn hour(&self) -> Option<i8> {
-        self.hour_ranged().map(|x| x.get())
-    }
-
-    #[inline]
-    fn hour_ranged(&self) -> Option<t::Hour> {
         self.hour
     }
 
@@ -2304,7 +2297,7 @@ impl BrokenDownTime {
     /// ```
     #[inline]
     pub fn minute(&self) -> Option<i8> {
-        self.minute.map(|x| x.get())
+        self.minute
     }
 
     /// Returns the parsed second, if available.
@@ -2323,7 +2316,7 @@ impl BrokenDownTime {
     /// ```
     #[inline]
     pub fn second(&self) -> Option<i8> {
-        self.second.map(|x| x.get())
+        self.second
     }
 
     /// Returns the parsed subsecond nanosecond, if available.
@@ -2358,7 +2351,7 @@ impl BrokenDownTime {
     /// ```
     #[inline]
     pub fn subsec_nanosecond(&self) -> Option<i32> {
-        self.subsec.map(|x| x.get())
+        self.subsec
     }
 
     /// Returns the parsed offset, if available.
@@ -2582,10 +2575,7 @@ impl BrokenDownTime {
     /// ```
     #[inline]
     pub fn set_year(&mut self, year: Option<i16>) -> Result<(), Error> {
-        self.year = match year {
-            None => None,
-            Some(year) => Some(t::Year::try_new("year", year)?),
-        };
+        self.year = year.map(b::Year::check).transpose()?;
         Ok(())
     }
 
@@ -2610,10 +2600,7 @@ impl BrokenDownTime {
     /// ```
     #[inline]
     pub fn set_month(&mut self, month: Option<i8>) -> Result<(), Error> {
-        self.month = match month {
-            None => None,
-            Some(month) => Some(t::Month::try_new("month", month)?),
-        };
+        self.month = month.map(b::Month::check).transpose()?;
         Ok(())
     }
 
@@ -2649,10 +2636,7 @@ impl BrokenDownTime {
     /// ```
     #[inline]
     pub fn set_day(&mut self, day: Option<i8>) -> Result<(), Error> {
-        self.day = match day {
-            None => None,
-            Some(day) => Some(t::Day::try_new("day", day)?),
-        };
+        self.day = day.map(b::Day::check).transpose()?;
         Ok(())
     }
 
@@ -2687,10 +2671,7 @@ impl BrokenDownTime {
     /// ```
     #[inline]
     pub fn set_day_of_year(&mut self, day: Option<i16>) -> Result<(), Error> {
-        self.day_of_year = match day {
-            None => None,
-            Some(day) => Some(t::DayOfYear::try_new("day-of-year", day)?),
-        };
+        self.day_of_year = day.map(b::DayOfYear::check).transpose()?;
         Ok(())
     }
 
@@ -2718,10 +2699,7 @@ impl BrokenDownTime {
         &mut self,
         year: Option<i16>,
     ) -> Result<(), Error> {
-        self.iso_week_year = match year {
-            None => None,
-            Some(year) => Some(t::ISOYear::try_new("year", year)?),
-        };
+        self.iso_week_year = year.map(b::ISOYear::check).transpose()?;
         Ok(())
     }
 
@@ -2758,10 +2736,7 @@ impl BrokenDownTime {
         &mut self,
         week_number: Option<i8>,
     ) -> Result<(), Error> {
-        self.iso_week = match week_number {
-            None => None,
-            Some(wk) => Some(t::ISOWeek::try_new("week-number", wk)?),
-        };
+        self.iso_week = week_number.map(b::ISOWeek::check).transpose()?;
         Ok(())
     }
 
@@ -2789,10 +2764,7 @@ impl BrokenDownTime {
         &mut self,
         week_number: Option<i8>,
     ) -> Result<(), Error> {
-        self.week_sun = match week_number {
-            None => None,
-            Some(wk) => Some(t::WeekNum::try_new("week-number", wk)?),
-        };
+        self.week_sun = week_number.map(b::WeekNum::check).transpose()?;
         Ok(())
     }
 
@@ -2820,10 +2792,7 @@ impl BrokenDownTime {
         &mut self,
         week_number: Option<i8>,
     ) -> Result<(), Error> {
-        self.week_mon = match week_number {
-            None => None,
-            Some(wk) => Some(t::WeekNum::try_new("week-number", wk)?),
-        };
+        self.week_mon = week_number.map(b::WeekNum::check).transpose()?;
         Ok(())
     }
 
@@ -2849,20 +2818,11 @@ impl BrokenDownTime {
     /// ```
     #[inline]
     pub fn set_hour(&mut self, hour: Option<i8>) -> Result<(), Error> {
-        self.set_hour_ranged(match hour {
-            None => None,
-            Some(hour) => Some(t::Hour::try_new("hour", hour)?),
-        });
-        Ok(())
-    }
-
-    #[inline]
-    fn set_hour_ranged(&mut self, hour: Option<t::Hour>) {
+        self.hour = hour.map(b::Hour::check).transpose()?;
         if let Some(meridiem) = self.meridiem {
-            self.hour = hour.map(|hour| meridiem.adjust_hour(hour));
-        } else {
-            self.hour = hour;
+            self.hour = self.hour.map(|hour| meridiem.adjust_hour(hour));
         }
+        Ok(())
     }
 
     /// Set the minute on this broken down time.
@@ -2888,10 +2848,7 @@ impl BrokenDownTime {
     /// ```
     #[inline]
     pub fn set_minute(&mut self, minute: Option<i8>) -> Result<(), Error> {
-        self.minute = match minute {
-            None => None,
-            Some(minute) => Some(t::Minute::try_new("minute", minute)?),
-        };
+        self.minute = minute.map(b::Minute::check).transpose()?;
         Ok(())
     }
 
@@ -2920,10 +2877,7 @@ impl BrokenDownTime {
     /// ```
     #[inline]
     pub fn set_second(&mut self, second: Option<i8>) -> Result<(), Error> {
-        self.second = match second {
-            None => None,
-            Some(second) => Some(t::Second::try_new("second", second)?),
-        };
+        self.second = second.map(b::Second::check).transpose()?;
         Ok(())
     }
 
@@ -2953,13 +2907,8 @@ impl BrokenDownTime {
         &mut self,
         subsec_nanosecond: Option<i32>,
     ) -> Result<(), Error> {
-        self.subsec = match subsec_nanosecond {
-            None => None,
-            Some(subsec_nanosecond) => Some(t::SubsecNanosecond::try_new(
-                "subsecond-nanosecond",
-                subsec_nanosecond,
-            )?),
-        };
+        self.subsec =
+            subsec_nanosecond.map(b::SubsecNanosecond::check).transpose()?;
         Ok(())
     }
 
@@ -3270,13 +3219,13 @@ impl From<DateTime> for BrokenDownTime {
     fn from(dt: DateTime) -> BrokenDownTime {
         let (d, t) = (dt.date(), dt.time());
         BrokenDownTime {
-            year: Some(d.year_ranged()),
-            month: Some(d.month_ranged()),
-            day: Some(d.day_ranged()),
-            hour: Some(t.hour_ranged()),
-            minute: Some(t.minute_ranged()),
-            second: Some(t.second_ranged()),
-            subsec: Some(t.subsec_nanosecond_ranged()),
+            year: Some(d.year()),
+            month: Some(d.month()),
+            day: Some(d.day()),
+            hour: Some(t.hour()),
+            minute: Some(t.minute()),
+            second: Some(t.second()),
+            subsec: Some(t.subsec_nanosecond()),
             meridiem: Some(Meridiem::from(t)),
             ..BrokenDownTime::default()
         }
@@ -3286,9 +3235,9 @@ impl From<DateTime> for BrokenDownTime {
 impl From<Date> for BrokenDownTime {
     fn from(d: Date) -> BrokenDownTime {
         BrokenDownTime {
-            year: Some(d.year_ranged()),
-            month: Some(d.month_ranged()),
-            day: Some(d.day_ranged()),
+            year: Some(d.year()),
+            month: Some(d.month()),
+            day: Some(d.day()),
             ..BrokenDownTime::default()
         }
     }
@@ -3297,8 +3246,8 @@ impl From<Date> for BrokenDownTime {
 impl From<ISOWeekDate> for BrokenDownTime {
     fn from(wd: ISOWeekDate) -> BrokenDownTime {
         BrokenDownTime {
-            iso_week_year: Some(wd.year_ranged()),
-            iso_week: Some(wd.week_ranged()),
+            iso_week_year: Some(wd.year()),
+            iso_week: Some(wd.week()),
             weekday: Some(wd.weekday()),
             ..BrokenDownTime::default()
         }
@@ -3308,10 +3257,10 @@ impl From<ISOWeekDate> for BrokenDownTime {
 impl From<Time> for BrokenDownTime {
     fn from(t: Time) -> BrokenDownTime {
         BrokenDownTime {
-            hour: Some(t.hour_ranged()),
-            minute: Some(t.minute_ranged()),
-            second: Some(t.second_ranged()),
-            subsec: Some(t.subsec_nanosecond_ranged()),
+            hour: Some(t.hour()),
+            minute: Some(t.minute()),
+            second: Some(t.second()),
+            subsec: Some(t.subsec_nanosecond()),
             meridiem: Some(Meridiem::from(t)),
             ..BrokenDownTime::default()
         }
@@ -3329,26 +3278,12 @@ impl From<Time> for BrokenDownTime {
 ///
 /// # Errors and panics
 ///
-/// This trait implementation returns an error when the underlying formatting
-/// can fail. Formatting can fail either because of an invalid format string,
-/// or if formatting requires a field in `BrokenDownTime` to be set that isn't.
-/// For example, trying to format a [`DateTime`] with the `%z` specifier will
-/// fail because a `DateTime` has no time zone or offset information associated
-/// with it.
-///
-/// Note though that the `std::fmt::Display` API doesn't support surfacing
-/// arbitrary errors. All errors collapse into the unit `std::fmt::Error`
-/// struct. To see the actual error, use [`BrokenDownTime::format`],
-/// [`BrokenDownTime::to_string`] or [`strtime::format`](format()).
-/// Unfortunately, the `std::fmt::Display` trait is used in many places where
-/// there is no way to report errors other than panicking.
-///
-/// Therefore, only use this type if you know your formatting string is valid
-/// and that the datetime type being formatted has all of the information
-/// required by the format string. Moreover, the `strftime` implementation in
-/// this crate is specifically designed to never error based on the specific
-/// values. For example, even though `%y` can only _parse_ years in the
-/// `1969-2068` range, it can format any valid year supported by Jiff.
+/// This trait implementation configures formatting to use
+/// [lenient mode](Config::lenient). This avoids panics occuring when using
+/// APIs like [`Timestamp::strftime`] with unsupported or invalid formatting
+/// directives. Without lenient mode, whenever formatting would fail, this
+/// would surface as a panic when converting this display implementation to
+/// a string.
 ///
 /// # Example
 ///
@@ -3377,6 +3312,33 @@ impl From<Time> for BrokenDownTime {
 ///
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
+///
+/// # Example: errors are silently ignored
+///
+/// If the formatting string is malformed in some way, then it is silently
+/// ignored. For example, when using an invalid formatting directive:
+///
+/// ```
+/// use jiff::Zoned;
+///
+/// let zdt = Zoned::UNIX_EPOCH;
+/// let string = zdt.strftime("%Y %").to_string();
+/// assert_eq!(string, "1970 %");
+/// ```
+///
+/// If one wants to surface errors from a formatting string, use a lower
+/// level API:
+///
+/// ```
+/// use jiff::Zoned;
+///
+/// let zdt = Zoned::UNIX_EPOCH;
+/// assert_eq!(
+///     jiff::fmt::strtime::format("%Y %", &zdt).unwrap_err().to_string(),
+///     "strftime formatting failed: invalid format string, \
+///      expected byte after `%`, but found end of format string",
+/// );
+/// ```
 pub struct Display<'f> {
     pub(crate) fmt: &'f [u8],
     pub(crate) tm: BrokenDownTime,
@@ -3386,7 +3348,13 @@ impl<'f> core::fmt::Display for Display<'f> {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         use crate::fmt::StdFmtWrite;
 
-        self.tm.format(self.fmt, StdFmtWrite(f)).map_err(|_| core::fmt::Error)
+        self.tm
+            .format_with_config(
+                &Config::new().lenient(true),
+                self.fmt,
+                &mut StdFmtWrite(f),
+            )
+            .map_err(|_| core::fmt::Error)
     }
 }
 
@@ -3404,6 +3372,7 @@ impl<'f> core::fmt::Debug for Display<'f> {
 /// This can be accessed on a [`BrokenDownTime`] via
 /// [`BrokenDownTime::meridiem`].
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Meridiem {
     /// "ante meridiem" or "before midday."
     ///
@@ -3417,10 +3386,10 @@ pub enum Meridiem {
 
 impl Meridiem {
     /// Adjusts 12-hour to 24-hour based on meridiem.
-    fn adjust_hour(self, hour: t::Hour) -> t::Hour {
+    fn adjust_hour(self, hour: i8) -> i8 {
         match self {
-            Meridiem::AM => hour % C(12),
-            Meridiem::PM => (hour % C(12)) + C(12),
+            Meridiem::AM => hour % 12,
+            Meridiem::PM => (hour % 12) + 12,
         }
     }
 }
@@ -3496,7 +3465,7 @@ impl Extension {
         if digits == 0 {
             return Ok((None, fmt));
         }
-        let (digits, fmt) = util::parse::split(fmt, digits).unwrap();
+        let (digits, fmt) = fmt.split_at(digits);
         let width = util::parse::i64(digits).context(E::FailedWidth)?;
         let width = u8::try_from(width).map_err(|_| E::RangeWidth)?;
         if fmt.is_empty() {
@@ -3565,9 +3534,13 @@ fn weekday_name_abbrev(wd: Weekday) -> &'static str {
 }
 
 /// Returns the "full" month name.
+///
+/// # Panics
+///
+/// When the given value is not in the range `1..=12`.
 #[cfg_attr(feature = "perf-inline", inline(always))]
-fn month_name_full(month: t::Month) -> &'static str {
-    match month.get() {
+fn month_name_full(month: i8) -> &'static str {
+    match month {
         1 => "January",
         2 => "February",
         3 => "March",
@@ -3585,9 +3558,13 @@ fn month_name_full(month: t::Month) -> &'static str {
 }
 
 /// Returns the abbreviated month name.
+///
+/// # Panics
+///
+/// When the given value is not in the range `1..=12`.
 #[cfg_attr(feature = "perf-inline", inline(always))]
-fn month_name_abbrev(month: t::Month) -> &'static str {
-    match month.get() {
+fn month_name_abbrev(month: i8) -> &'static str {
+    match month {
         1 => "Jan",
         2 => "Feb",
         3 => "Mar",

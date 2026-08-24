@@ -1,3 +1,5 @@
+use jcore::constants as c;
+
 use crate::{
     fmt::{
         buffer::{ArrayBuffer, BorrowedBuffer},
@@ -6,15 +8,13 @@ use crate::{
     Error, SignedDuration, Span, Unit,
 };
 
-const SECS_PER_HOUR: u64 = MINS_PER_HOUR * SECS_PER_MIN;
-const SECS_PER_MIN: u64 = 60;
-const MINS_PER_HOUR: u64 = 60;
-const NANOS_PER_HOUR: u128 =
-    (SECS_PER_MIN * MINS_PER_HOUR * NANOS_PER_SEC) as u128;
-const NANOS_PER_MIN: u128 = (SECS_PER_MIN * NANOS_PER_SEC) as u128;
-const NANOS_PER_SEC: u64 = 1_000_000_000;
-const NANOS_PER_MILLI: u32 = 1_000_000;
-const NANOS_PER_MICRO: u32 = 1_000;
+const SECS_PER_HOUR: u64 = c::SECS_PER_HOUR as u64;
+const SECS_PER_MIN: u64 = c::SECS_PER_MIN as u64;
+const MINS_PER_HOUR: u64 = c::MINS_PER_HOUR as u64;
+const NANOS_PER_HOUR: u128 = c::NANOS_PER_HOUR as u128;
+const NANOS_PER_MIN: u128 = c::NANOS_PER_MIN as u128;
+const NANOS_PER_MILLI: u32 = c::NANOS_PER_MILLI_32 as u32;
+const NANOS_PER_MICRO: u32 = c::NANOS_PER_MICRO_32 as u32;
 
 /// Defines the maximum possible length (in bytes) of a `Span` printed in the
 /// friendly format.
@@ -1281,64 +1281,34 @@ impl SpanPrinter {
         let units = span.units();
 
         if units.contains(Unit::Year) {
-            wtr.write(
-                Unit::Year,
-                span.get_years_unsigned().get().unsigned_abs().into(),
-            );
+            wtr.write(Unit::Year, span.get_years_unsigned().into());
         }
         if units.contains(Unit::Month) {
-            wtr.write(
-                Unit::Month,
-                span.get_months_unsigned().get().unsigned_abs().into(),
-            );
+            wtr.write(Unit::Month, span.get_months_unsigned().into());
         }
         if units.contains(Unit::Week) {
-            wtr.write(
-                Unit::Week,
-                span.get_weeks_unsigned().get().unsigned_abs().into(),
-            );
+            wtr.write(Unit::Week, span.get_weeks_unsigned().into());
         }
         if units.contains(Unit::Day) {
-            wtr.write(
-                Unit::Day,
-                span.get_days_unsigned().get().unsigned_abs().into(),
-            );
+            wtr.write(Unit::Day, span.get_days_unsigned().into());
         }
         if units.contains(Unit::Hour) {
-            wtr.write(
-                Unit::Hour,
-                span.get_hours_unsigned().get().unsigned_abs().into(),
-            );
+            wtr.write(Unit::Hour, span.get_hours_unsigned().into());
         }
         if units.contains(Unit::Minute) {
-            wtr.write(
-                Unit::Minute,
-                span.get_minutes_unsigned().get().unsigned_abs(),
-            );
+            wtr.write(Unit::Minute, span.get_minutes_unsigned());
         }
         if units.contains(Unit::Second) {
-            wtr.write(
-                Unit::Second,
-                span.get_seconds_unsigned().get().unsigned_abs(),
-            );
+            wtr.write(Unit::Second, span.get_seconds_unsigned());
         }
         if units.contains(Unit::Millisecond) {
-            wtr.write(
-                Unit::Millisecond,
-                span.get_milliseconds_unsigned().get().unsigned_abs(),
-            );
+            wtr.write(Unit::Millisecond, span.get_milliseconds_unsigned());
         }
         if units.contains(Unit::Microsecond) {
-            wtr.write(
-                Unit::Microsecond,
-                span.get_microseconds_unsigned().get().unsigned_abs(),
-            );
+            wtr.write(Unit::Microsecond, span.get_microseconds_unsigned());
         }
         if units.contains(Unit::Nanosecond) {
-            wtr.write(
-                Unit::Nanosecond,
-                span.get_nanoseconds_unsigned().get().unsigned_abs(),
-            );
+            wtr.write(Unit::Nanosecond, span.get_nanoseconds_unsigned());
         }
     }
 
@@ -1350,28 +1320,16 @@ impl SpanPrinter {
         let units = span.units();
 
         if units.contains(Unit::Year) {
-            wtr.write(
-                Unit::Year,
-                span.get_years_unsigned().get().unsigned_abs().into(),
-            );
+            wtr.write(Unit::Year, span.get_years_unsigned().into());
         }
         if units.contains(Unit::Month) {
-            wtr.write(
-                Unit::Month,
-                span.get_months_unsigned().get().unsigned_abs().into(),
-            );
+            wtr.write(Unit::Month, span.get_months_unsigned().into());
         }
         if units.contains(Unit::Week) {
-            wtr.write(
-                Unit::Week,
-                span.get_weeks_unsigned().get().unsigned_abs().into(),
-            );
+            wtr.write(Unit::Week, span.get_weeks_unsigned().into());
         }
         if units.contains(Unit::Day) {
-            wtr.write(
-                Unit::Day,
-                span.get_days_unsigned().get().unsigned_abs().into(),
-            );
+            wtr.write(Unit::Day, span.get_days_unsigned().into());
         }
     }
 
@@ -1390,7 +1348,7 @@ impl SpanPrinter {
         self.print_span_designators_non_fraction(&non_fractional, wtr);
         wtr.write_fractional_duration(
             unit,
-            &fractional.to_duration_invariant().unsigned_abs(),
+            &fractional.to_invariant_duration().unsigned_abs(),
         );
     }
 
@@ -1414,17 +1372,9 @@ impl SpanPrinter {
         }
 
         let padding = self.padding.unwrap_or(2);
-        wtr.bbuf.write_int_pad(
-            span.get_hours_ranged().get().unsigned_abs(),
-            b'0',
-            padding,
-        );
+        wtr.bbuf.write_int_pad(span.get_hours_unsigned(), b'0', padding);
         wtr.bbuf.write_ascii_char(b':');
-        wtr.bbuf.write_int_pad(
-            span.get_minutes_ranged().get().unsigned_abs(),
-            b'0',
-            padding,
-        );
+        wtr.bbuf.write_int_pad(span.get_minutes_unsigned(), b'0', padding);
         wtr.bbuf.write_ascii_char(b':');
         // You'd think we could do better here from a code size
         // perspective. But when I tried to inline the logic to
@@ -1852,7 +1802,7 @@ impl FractionalPrinter {
         precision: Option<u8>,
     ) -> FractionalPrinter {
         FractionalPrinter::from_duration_seconds(
-            &span.to_duration_invariant().unsigned_abs(),
+            &span.to_invariant_duration().unsigned_abs(),
             padding,
             precision,
         )

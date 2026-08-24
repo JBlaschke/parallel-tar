@@ -285,7 +285,7 @@ mod atomic_64_macros {
                 any(miri, portable_atomic_sanitize_thread),
                 not(portable_atomic_atomic_intrinsics),
             )),
-            portable_atomic_unstable_asm_experimental_arch,
+            not(portable_atomic_no_asm),
             any(
                 target_feature = "quadword-atomics",
                 portable_atomic_target_feature = "quadword-atomics",
@@ -374,7 +374,7 @@ mod atomic_128_macros {
                 any(miri, portable_atomic_sanitize_thread),
                 not(portable_atomic_atomic_intrinsics),
             )),
-            portable_atomic_unstable_asm_experimental_arch,
+            not(portable_atomic_no_asm),
             any(
                 target_feature = "quadword-atomics",
                 portable_atomic_target_feature = "quadword-atomics",
@@ -567,6 +567,44 @@ mod atomic_cas_macros {
     macro_rules! cfg_no_atomic_cas_or_amo8 {
         ($($tt:tt)*) => {};
     }
+}
+
+macro_rules! cfg_core_atomic {
+    ($($tt:tt)*) => {
+        #[cfg(not(any(
+            target_arch = "avr",
+            target_arch = "msp430",
+            all(
+                portable_atomic_no_atomic_load_store,
+                not(all(target_arch = "bpf", not(feature = "critical-section"))),
+            ),
+        )))]
+        #[cfg_attr(
+            portable_atomic_no_cfg_target_has_atomic,
+            cfg(not(all(
+                any(
+                    target_arch = "riscv32",
+                    target_arch = "riscv64",
+                    feature = "critical-section",
+                    portable_atomic_unsafe_assume_single_core,
+                ),
+                portable_atomic_no_atomic_cas,
+            )))
+        )]
+        #[cfg_attr(
+            not(portable_atomic_no_cfg_target_has_atomic),
+            cfg(not(all(
+                any(
+                    target_arch = "riscv32",
+                    target_arch = "riscv64",
+                    feature = "critical-section",
+                    portable_atomic_unsafe_assume_single_core,
+                ),
+                not(target_has_atomic = "ptr"),
+            )))
+        )]
+        items!($($tt)*);
+    };
 }
 
 // Check that all cfg_ macros work.

@@ -629,6 +629,13 @@ For more, see the [`fmt::serde`] sub-module. (This requires enabling Jiff's
   (for example, when using `wasm-pack`). Only binary, tests and benchmarks
   should enable this feature. See
   [Platform support](crate::_documentation::platform) for more details.
+* **defmt** -
+  When enabled, Jiff will implement the [`defmt::Format`] trait for many
+  of its types. This is useful for embedded environments where the usual
+  `core::fmt` machinery is not practical to use. Note that, at time of writing
+  (2026-06-12), not all public types in this crate implement [`defmt::Format`].
+  If there are types for which you need `defmt` support but don't have it in
+  Jiff, then please [open a new issue][issue-new].
 
 ### Time zone features
 
@@ -636,8 +643,7 @@ For more, see the [`fmt::serde`] sub-module. (This requires enabling Jiff's
   When enabled, Jiff will include code that attempts to determine the "system"
   time zone. For example, on Unix systems, this is usually determined by
   looking at the symlink information on `/etc/localtime`. But in general, it's
-  very platform specific and heuristic oriented. On some platforms, this may
-  require extra dependencies. (For example, `windows-sys` on Windows.)
+  very platform specific and heuristic oriented.
 * **tz-fat** (enabled by default) -
   When enabled, Jiff will "fatten" time zone data with extra transitions to
   make time zone lookups faster. This may result in increased heap memory
@@ -687,6 +693,7 @@ For more, see the [`fmt::serde`] sub-module. (This requires enabling Jiff's
 [`jiff-static`]: https://docs.rs/jiff-static
 [`jiff-tzdb`]: https://docs.rs/jiff-tzdb
 [Concatenated Time Zone Database]: https://android.googlesource.com/platform/libcore/+/jb-mr2-release/luni/src/main/java/libcore/util/ZoneInfoDB.java
+[issue-new]: https://github.com/BurntSushi/jiff/issues/new
 */
 
 #![no_std]
@@ -748,6 +755,12 @@ extern crate std;
 #[cfg(any(test, feature = "alloc"))]
 extern crate alloc;
 
+/// This is NOT part of Jiff's public API.
+///
+/// This is exported for use by `jiff-static`'s procedural macro.
+#[doc(hidden)]
+pub use jcore as __jcore;
+
 pub use crate::{
     error::Error,
     signed_duration::{SignedDuration, SignedDurationRound},
@@ -759,7 +772,7 @@ pub use crate::{
         Timestamp, TimestampArithmetic, TimestampDifference,
         TimestampDisplayWithOffset, TimestampRound, TimestampSeries,
     },
-    util::round::mode::RoundMode,
+    util::round::RoundMode,
     zoned::{
         Zoned, ZonedArithmetic, ZonedDifference, ZonedRound, ZonedSeries,
         ZonedWith,
@@ -775,8 +788,6 @@ mod error;
 pub mod fmt;
 #[cfg(feature = "std")]
 mod now;
-#[doc(hidden)]
-pub mod shared;
 mod signed_duration;
 mod span;
 mod timestamp;
@@ -812,38 +823,38 @@ mod tests {
     #[cfg(feature = "std")]
     #[test]
     fn ranges() {
-        use crate::util::t;
+        use crate::util::b;
 
-        dbg!((t::SpanYears::MIN, t::SpanYears::MAX));
-        dbg!((t::SpanMonths::MIN, t::SpanMonths::MAX));
-        dbg!((t::SpanWeeks::MIN, t::SpanWeeks::MAX));
-        dbg!((t::SpanDays::MIN, t::SpanDays::MAX));
-        dbg!((t::SpanHours::MIN, t::SpanHours::MAX));
-        dbg!((t::SpanMinutes::MIN, t::SpanMinutes::MAX));
-        dbg!((t::SpanSeconds::MIN, t::SpanSeconds::MAX));
-        dbg!((t::SpanMilliseconds::MIN, t::SpanMilliseconds::MAX));
-        dbg!((t::SpanMicroseconds::MIN, t::SpanMicroseconds::MAX));
-        dbg!((t::SpanNanoseconds::MIN, t::SpanNanoseconds::MAX));
-        dbg!((t::UnixSeconds::MIN, t::UnixSeconds::MAX));
-        dbg!((t::UnixEpochDay::MIN, t::UnixEpochDay::MAX));
+        dbg!((b::SpanYears::MIN, b::SpanYears::MAX));
+        dbg!((b::SpanMonths::MIN, b::SpanMonths::MAX));
+        dbg!((b::SpanWeeks::MIN, b::SpanWeeks::MAX));
+        dbg!((b::SpanDays::MIN, b::SpanDays::MAX));
+        dbg!((b::SpanHours::MIN, b::SpanHours::MAX));
+        dbg!((b::SpanMinutes::MIN, b::SpanMinutes::MAX));
+        dbg!((b::SpanSeconds::MIN, b::SpanSeconds::MAX));
+        dbg!((b::SpanMilliseconds::MIN, b::SpanMilliseconds::MAX));
+        dbg!((b::SpanMicroseconds::MIN, b::SpanMicroseconds::MAX));
+        dbg!((b::SpanNanoseconds::MIN, b::SpanNanoseconds::MAX));
+        dbg!((b::UnixEpochSeconds::MIN, b::UnixEpochSeconds::MAX));
+        dbg!((b::UnixEpochDays::MIN, b::UnixEpochDays::MAX));
     }
 
     #[cfg(feature = "std")]
     #[test]
     fn maximally_long_span() {
-        use crate::{fmt::friendly, util::t};
+        use crate::{fmt::friendly, util::b};
 
         let span = Span::new()
-            .years(t::SpanYears::MAX_REPR)
-            .months(t::SpanMonths::MAX_REPR)
-            .weeks(t::SpanWeeks::MAX_REPR)
-            .days(t::SpanDays::MAX_REPR)
-            .hours(t::SpanHours::MAX_REPR)
-            .minutes(t::SpanMinutes::MAX_REPR)
-            .seconds(t::SpanSeconds::MAX_REPR)
-            .milliseconds(t::SpanMilliseconds::MAX_REPR)
-            .microseconds(t::SpanMicroseconds::MAX_REPR)
-            .nanoseconds(t::SpanNanoseconds::MAX_REPR)
+            .years(b::SpanYears::MAX)
+            .months(b::SpanMonths::MAX)
+            .weeks(b::SpanWeeks::MAX)
+            .days(b::SpanDays::MAX)
+            .hours(b::SpanHours::MAX)
+            .minutes(b::SpanMinutes::MAX)
+            .seconds(b::SpanSeconds::MAX)
+            .milliseconds(b::SpanMilliseconds::MAX)
+            .microseconds(b::SpanMicroseconds::MAX)
+            .nanoseconds(b::SpanNanoseconds::MAX)
             .negate();
         std::println!("{span}");
         std::println!("{span:#}");

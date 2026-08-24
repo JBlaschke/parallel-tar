@@ -5,8 +5,6 @@ pub type blksize_t = i64;
 pub type nlink_t = u64;
 pub type wchar_t = i32;
 pub type greg_t = u64;
-pub type __u64 = u64;
-pub type __s64 = i64;
 pub type statfs64 = statfs;
 pub type stat64 = stat;
 
@@ -40,27 +38,12 @@ s! {
         pub st_gid: crate::gid_t,
         pub st_rdev: crate::dev_t,
         pub st_size: off_t,
-
-        #[cfg(not(musl_v1_2_3))]
         pub st_atime: crate::time_t,
-        #[cfg(not(musl_v1_2_3))]
         pub st_atime_nsec: c_long,
-        #[cfg(not(musl_v1_2_3))]
         pub st_mtime: crate::time_t,
-        #[cfg(not(musl_v1_2_3))]
         pub st_mtime_nsec: c_long,
-        #[cfg(not(musl_v1_2_3))]
         pub st_ctime: crate::time_t,
-        #[cfg(not(musl_v1_2_3))]
         pub st_ctime_nsec: c_long,
-
-        #[cfg(musl_v1_2_3)]
-        pub st_atim: crate::timespec,
-        #[cfg(musl_v1_2_3)]
-        pub st_mtim: crate::timespec,
-        #[cfg(musl_v1_2_3)]
-        pub st_ctim: crate::timespec,
-
         pub st_blksize: crate::blksize_t,
         pub st_blocks: crate::blkcnt_t,
         __unused: Padding<[c_long; 3]>,

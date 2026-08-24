@@ -1,8 +1,6 @@
 use crate::off_t;
 use crate::prelude::*;
 
-pub type __u64 = c_ulonglong;
-pub type __s64 = c_longlong;
 pub type wchar_t = u32;
 pub type nlink_t = u32;
 pub type blksize_t = c_int;
@@ -23,27 +21,12 @@ s! {
         pub st_blksize: crate::blksize_t,
         __pad1: Padding<c_int>,
         pub st_blocks: crate::blkcnt_t,
-
-        #[cfg(not(musl_v1_2_3))]
         pub st_atime: crate::time_t,
-        #[cfg(not(musl_v1_2_3))]
         pub st_atime_nsec: c_long,
-        #[cfg(not(musl_v1_2_3))]
         pub st_mtime: crate::time_t,
-        #[cfg(not(musl_v1_2_3))]
         pub st_mtime_nsec: c_long,
-        #[cfg(not(musl_v1_2_3))]
         pub st_ctime: crate::time_t,
-        #[cfg(not(musl_v1_2_3))]
         pub st_ctime_nsec: c_long,
-
-        #[cfg(musl_v1_2_3)]
-        pub st_atim: crate::timespec,
-        #[cfg(musl_v1_2_3)]
-        pub st_mtim: crate::timespec,
-        #[cfg(musl_v1_2_3)]
-        pub st_ctim: crate::timespec,
-
         __unused: Padding<[c_uint; 2]>,
     }
 
@@ -117,7 +100,7 @@ s! {
     }
 
     pub struct user_fpsimd_struct {
-        pub vregs: [crate::__uint128_t; 32],
+        pub vregs: [u128; 32],
         pub fpsr: u32,
         pub fpcr: u32,
     }
@@ -388,6 +371,7 @@ pub const SYS_pread64: c_long = 67;
 pub const SYS_pwrite64: c_long = 68;
 pub const SYS_preadv: c_long = 69;
 pub const SYS_pwritev: c_long = 70;
+pub const SYS_sendfile: c_long = 71;
 pub const SYS_pselect6: c_long = 72;
 pub const SYS_ppoll: c_long = 73;
 pub const SYS_signalfd4: c_long = 74;
@@ -539,6 +523,7 @@ pub const SYS_keyctl: c_long = 219;
 pub const SYS_clone: c_long = 220;
 pub const SYS_execve: c_long = 221;
 pub const SYS_mmap: c_long = 222;
+pub const SYS_fadvise64: c_long = 223;
 pub const SYS_swapon: c_long = 224;
 pub const SYS_swapoff: c_long = 225;
 pub const SYS_mprotect: c_long = 226;

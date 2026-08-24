@@ -1,3 +1,5 @@
+use jcore::bounds::Sign;
+
 use crate::{
     error::{fmt::friendly::Error as E, ErrorContext},
     fmt::{
@@ -5,7 +7,7 @@ use crate::{
         util::{parse_temporal_fraction, DurationUnits},
         Parsed,
     },
-    util::{c::Sign, parse},
+    util::parse,
     Error, SignedDuration, Span, Unit,
 };
 
@@ -675,6 +677,8 @@ mod tests {
         insta::assert_snapshot!(p("1.5secs"), @"PT1.5S");
         insta::assert_snapshot!(p("1.5msecs"), @"PT0.0015S");
         insta::assert_snapshot!(p("1.5µsecs"), @"PT0.0000015S");
+        insta::assert_snapshot!(p("-0.5secs"), @"-PT0.5S");
+        insta::assert_snapshot!(p("0.5secs ago"), @"-PT0.5S");
 
         insta::assert_snapshot!(p("1d 1.5hrs"), @"P1DT1H30M");
         insta::assert_snapshot!(p("1h 1.5mins"), @"PT1H1M30S");
@@ -822,38 +826,38 @@ mod tests {
 
         insta::assert_snapshot!(
             p("19999 years"),
-            @r#"failed to parse input in the "friendly" duration format: failed to set value for year unit on span: parameter 'years' with value 19999 is not in the required range of -19998..=19998"#,
+            @r#"failed to parse input in the "friendly" duration format: failed to set value for year unit on span: parameter 'years' is not in the required range of -19998..=19998"#,
         );
         insta::assert_snapshot!(
             p("19999 years ago"),
-            @r#"failed to parse input in the "friendly" duration format: failed to set value for year unit on span: parameter 'years' with value -19999 is not in the required range of -19998..=19998"#,
+            @r#"failed to parse input in the "friendly" duration format: failed to set value for year unit on span: parameter 'years' is not in the required range of -19998..=19998"#,
         );
 
         insta::assert_snapshot!(
             p("239977 months"),
-            @r#"failed to parse input in the "friendly" duration format: failed to set value for month unit on span: parameter 'months' with value 239977 is not in the required range of -239976..=239976"#,
+            @r#"failed to parse input in the "friendly" duration format: failed to set value for month unit on span: parameter 'months' is not in the required range of -239976..=239976"#,
         );
         insta::assert_snapshot!(
             p("239977 months ago"),
-            @r#"failed to parse input in the "friendly" duration format: failed to set value for month unit on span: parameter 'months' with value -239977 is not in the required range of -239976..=239976"#,
+            @r#"failed to parse input in the "friendly" duration format: failed to set value for month unit on span: parameter 'months' is not in the required range of -239976..=239976"#,
         );
 
         insta::assert_snapshot!(
             p("1043498 weeks"),
-            @r#"failed to parse input in the "friendly" duration format: failed to set value for week unit on span: parameter 'weeks' with value 1043498 is not in the required range of -1043497..=1043497"#,
+            @r#"failed to parse input in the "friendly" duration format: failed to set value for week unit on span: parameter 'weeks' is not in the required range of -1043497..=1043497"#,
         );
         insta::assert_snapshot!(
             p("1043498 weeks ago"),
-            @r#"failed to parse input in the "friendly" duration format: failed to set value for week unit on span: parameter 'weeks' with value -1043498 is not in the required range of -1043497..=1043497"#,
+            @r#"failed to parse input in the "friendly" duration format: failed to set value for week unit on span: parameter 'weeks' is not in the required range of -1043497..=1043497"#,
         );
 
         insta::assert_snapshot!(
             p("7304485 days"),
-            @r#"failed to parse input in the "friendly" duration format: failed to set value for day unit on span: parameter 'days' with value 7304485 is not in the required range of -7304484..=7304484"#,
+            @r#"failed to parse input in the "friendly" duration format: failed to set value for day unit on span: parameter 'days' is not in the required range of -7304484..=7304484"#,
         );
         insta::assert_snapshot!(
             p("7304485 days ago"),
-            @r#"failed to parse input in the "friendly" duration format: failed to set value for day unit on span: parameter 'days' with value -7304485 is not in the required range of -7304484..=7304484"#,
+            @r#"failed to parse input in the "friendly" duration format: failed to set value for day unit on span: parameter 'days' is not in the required range of -7304484..=7304484"#,
         );
 
         insta::assert_snapshot!(
@@ -862,7 +866,7 @@ mod tests {
         );
         insta::assert_snapshot!(
             p("9223372036854775808 nanoseconds ago"),
-            @r#"failed to parse input in the "friendly" duration format: failed to set value for nanosecond unit on span: parameter 'nanoseconds' with value -9223372036854775808 is not in the required range of -9223372036854775807..=9223372036854775807"#,
+            @r#"failed to parse input in the "friendly" duration format: failed to set value for nanosecond unit on span: parameter 'nanoseconds' is not in the required range of -9223372036854775807..=9223372036854775807"#,
         );
     }
 
@@ -939,6 +943,8 @@ mod tests {
         insta::assert_snapshot!(p("1.5secs"), @"PT1.5S");
         insta::assert_snapshot!(p("1.5msecs"), @"PT0.0015S");
         insta::assert_snapshot!(p("1.5µsecs"), @"PT0.0000015S");
+        insta::assert_snapshot!(p("-0.5secs"), @"-PT0.5S");
+        insta::assert_snapshot!(p("0.5secs ago"), @"-PT0.5S");
 
         insta::assert_snapshot!(p("1h 1.5mins"), @"PT1H1M30S");
         insta::assert_snapshot!(p("1m 1.5secs"), @"PT1M1.5S");

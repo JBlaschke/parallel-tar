@@ -1,17 +1,22 @@
 use core::time::Duration;
 
+use jcore::bounds::Sign;
+
 use crate::{
     civil::{Date, DateTime, Time},
     error::{signed_duration::Error as E, ErrorContext},
     fmt::{friendly, temporal},
     tz::Offset,
-    util::{rangeint::TryRFrom, t},
+    util::{
+        b::{self, SpecialBoundsError},
+        round::Increment,
+    },
     Error, RoundMode, Timestamp, Unit, Zoned,
 };
 
-#[cfg(not(feature = "std"))]
-use crate::util::libm::Float;
-
+// We define our own constants here instead of using `jcore` to try and make
+// things a little more self-contained here. These values are also just never
+// going to change and pretty easy to get right.
 const NANOS_PER_SEC: i32 = 1_000_000_000;
 const NANOS_PER_MILLI: i32 = 1_000_000;
 const NANOS_PER_MICRO: i32 = 1_000;
@@ -19,6 +24,8 @@ const MILLIS_PER_SEC: i64 = 1_000;
 const MICROS_PER_SEC: i64 = 1_000_000;
 const SECS_PER_MINUTE: i64 = 60;
 const MINS_PER_HOUR: i64 = 60;
+const HOURS_PER_CIVIL_DAY: i64 = 24;
+const DAYS_PER_CIVIL_WEEK: i64 = 7;
 
 /// A signed duration of time represented as a 96-bit integer of nanoseconds.
 ///
@@ -445,38 +452,30 @@ impl SignedDuration {
         SignedDuration::new_unchecked(secs, nanos)
     }
 
-    /// Creates a new signed duration without handling nanosecond overflow.
+    /// Creates a new signed duration without handling nanosecond overflow or
+    /// sign differences.
     ///
     /// This might produce tighter code in some cases.
     ///
-    /// # Panics
-    ///
-    /// When `|nanos|` is greater than or equal to 1 second.
-    #[inline]
-    pub(crate) const fn new_without_nano_overflow(
-        secs: i64,
-        nanos: i32,
-    ) -> SignedDuration {
-        assert!(nanos <= 999_999_999);
-        assert!(nanos >= -999_999_999);
-        SignedDuration::new_unchecked(secs, nanos)
-    }
-
-    /// Creates a new signed duration without handling nanosecond overflow.
-    ///
-    /// This might produce tighter code in some cases.
+    /// Note that this should not be made public *and* safe.
     ///
     /// # Panics
     ///
     /// In debug mode only, when `|nanos|` is greater than or equal to 1
-    /// second.
-    ///
-    /// This is not exported so that code outside this module can rely on
-    /// `|nanos|` being less than a second for purposes of memory safety.
+    /// second. Or when both `secs` and `nanos` are non-zero and their signs
+    /// mismatch.
     #[inline]
-    const fn new_unchecked(secs: i64, nanos: i32) -> SignedDuration {
+    pub(crate) const fn new_unchecked(
+        secs: i64,
+        nanos: i32,
+    ) -> SignedDuration {
         debug_assert!(nanos <= 999_999_999);
         debug_assert!(nanos >= -999_999_999);
+        debug_assert!(
+            secs == 0
+                || nanos == 0
+                || secs.signum() == (nanos.signum() as i64)
+        );
         SignedDuration { secs, nanos }
     }
 
@@ -793,24 +792,6 @@ impl SignedDuration {
         }
     }
 
-    /// Converts the given timestamp into a signed duration.
-    ///
-    /// This isn't exported because it's not clear that it makes semantic
-    /// sense, since it somewhat encodes the assumption that the "desired"
-    /// duration is relative to the Unix epoch. Which is... probably fine?
-    /// But I'm not sure.
-    ///
-    /// But the point of this is to make the conversion a little cheaper.
-    /// Namely, since a `Timestamp` internally uses same representation as a
-    /// `SignedDuration` with the same guarantees (except with smaller limits),
-    /// we can avoid a fair bit of case analysis done in `SignedDuration::new`.
-    pub(crate) fn from_timestamp(timestamp: Timestamp) -> SignedDuration {
-        SignedDuration::new_unchecked(
-            timestamp.as_second(),
-            timestamp.subsec_nanosecond(),
-        )
-    }
-
     /// Returns true if this duration spans no time.
     ///
     /// # Example
@@ -1011,6 +992,20 @@ impl SignedDuration {
         // OK because subsec_nanos maxes out at 999_999_999, and adding that to
         // i64::MAX*1_000_000_000 will never overflow a i128.
         nanos + (self.nanos as i128)
+    }
+
+    /// Like `SignedDuration::as_nanos()`, but only returns a result when it
+    /// fits into a 64-bit integer.
+    #[inline]
+    pub(crate) fn as_nanos64(&self) -> Option<i64> {
+        const MIN: SignedDuration = SignedDuration::from_nanos(i64::MIN);
+        const MAX: SignedDuration = SignedDuration::from_nanos(i64::MAX);
+        if MIN <= *self && *self <= MAX {
+            let nanos = self.secs * (NANOS_PER_SEC as i64);
+            Some(nanos + (self.nanos as i64))
+        } else {
+            None
+        }
     }
 
     // NOTE: We don't provide `abs_diff` here because we can't represent the
@@ -1458,14 +1453,16 @@ impl SignedDuration {
     /// ```
     #[inline]
     pub fn try_from_secs_f64(secs: f64) -> Result<SignedDuration, Error> {
+        #[cfg(not(feature = "std"))]
+        use crate::util::libm::Float;
+
         if !secs.is_finite() {
             return Err(Error::from(E::ConvertNonFinite));
         }
-        if secs < (i64::MIN as f64) {
-            return Err(Error::slim_range("floating point seconds"));
-        }
-        if secs > (i64::MAX as f64) {
-            return Err(Error::slim_range("floating point seconds"));
+        if !((i64::MIN as f64) <= secs && secs <= (i64::MAX as f64)) {
+            return Err(
+                SpecialBoundsError::SignedDurationFloatOutOfRangeF64.into()
+            );
         }
 
         let mut int_secs = secs.trunc() as i64;
@@ -1475,7 +1472,7 @@ impl SignedDuration {
             let increment = i64::from(int_nanos.signum());
             int_secs = int_secs
                 .checked_add(increment)
-                .ok_or_else(|| Error::slim_range("floating point seconds"))?;
+                .ok_or_else(b::SignedDurationSeconds::error)?;
             int_nanos = 0;
         }
         Ok(SignedDuration::new_unchecked(int_secs, int_nanos))
@@ -1513,15 +1510,18 @@ impl SignedDuration {
     /// ```
     #[inline]
     pub fn try_from_secs_f32(secs: f32) -> Result<SignedDuration, Error> {
+        #[cfg(not(feature = "std"))]
+        use crate::util::libm::Float;
+
         if !secs.is_finite() {
             return Err(Error::from(E::ConvertNonFinite));
         }
-        if secs < (i64::MIN as f32) {
-            return Err(Error::slim_range("floating point seconds"));
+        if !((i64::MIN as f32) <= secs && secs <= (i64::MAX as f32)) {
+            return Err(
+                SpecialBoundsError::SignedDurationFloatOutOfRangeF32.into()
+            );
         }
-        if secs > (i64::MAX as f32) {
-            return Err(Error::slim_range("floating point seconds"));
-        }
+
         let mut int_nanos =
             (secs.fract() * (NANOS_PER_SEC as f32)).round() as i32;
         let mut int_secs = secs.trunc() as i64;
@@ -1530,7 +1530,7 @@ impl SignedDuration {
             // N.B. I haven't found a way to trigger this error path in tests.
             int_secs = int_secs
                 .checked_add(increment)
-                .ok_or_else(|| Error::slim_range("floating point seconds"))?;
+                .ok_or_else(b::SignedDurationSeconds::error)?;
             int_nanos = 0;
         }
         Ok(SignedDuration::new_unchecked(int_secs, int_nanos))
@@ -2013,6 +2013,22 @@ impl SignedDuration {
         }
     }
 
+    /// For internal use with Jiff.
+    ///
+    /// This returns a `jcore` type, so this can never be exported! Otherwise
+    /// it would create a public dependency on `jcore`.
+    #[inline]
+    pub(crate) const fn sign(self) -> Sign {
+        if self.is_zero() {
+            Sign::Zero
+        } else if self.is_positive() {
+            Sign::Positive
+        } else {
+            debug_assert!(self.is_negative());
+            Sign::Negative
+        }
+    }
+
     /// Returns true when this duration is positive. That is, greater than
     /// [`SignedDuration::ZERO`].
     ///
@@ -2078,16 +2094,15 @@ impl SignedDuration {
     }
 
     pub(crate) fn date_until(date1: Date, date2: Date) -> SignedDuration {
-        let days = date1.until_days_ranged(date2);
+        let days = date1.until_days(date2);
         // OK because difference in days fits in an i32, and multiplying an
         // i32 by 24 will never overflow an i64.
-        let hours = 24 * i64::from(days.get());
+        let hours = 24 * i64::from(days);
         SignedDuration::from_hours(hours)
     }
 
     pub(crate) fn time_until(time1: Time, time2: Time) -> SignedDuration {
-        let nanos = time1.until_nanoseconds(time2);
-        SignedDuration::from_nanos(nanos.get())
+        SignedDuration::from_nanos(time1.until_nanoseconds(time2))
     }
 
     pub(crate) fn offset_until(
@@ -2140,9 +2155,7 @@ impl SignedDuration {
                 let dur = SignedDuration::try_from(dur)
                     .context(E::ConvertSystemTime)?;
                 dur.checked_neg()
-                    .ok_or_else(|| {
-                        Error::slim_range("signed duration seconds")
-                    })
+                    .ok_or_else(b::SignedDurationSeconds::error)
                     .context(E::ConvertSystemTime)
             }
         }
@@ -2257,15 +2270,17 @@ impl SignedDuration {
     ///
     /// assert_eq!(
     ///     SignedDuration::MAX.round(Unit::Hour).unwrap_err().to_string(),
-    ///     "rounding signed duration to nearest hour \
-    ///      resulted in a value outside the supported \
-    ///      range of a `jiff::SignedDuration`",
+    ///     "rounding signed duration to nearest hour resulted in a value \
+    ///      outside the supported range of a `jiff::SignedDuration`: \
+    ///      parameter 'signed duration seconds' is not in the \
+    ///      required range of -9223372036854775808..=9223372036854775807",
     /// );
     /// assert_eq!(
     ///     SignedDuration::MIN.round(Unit::Hour).unwrap_err().to_string(),
-    ///     "rounding signed duration to nearest hour \
-    ///      resulted in a value outside the supported \
-    ///      range of a `jiff::SignedDuration`",
+    ///     "rounding signed duration to nearest hour resulted in a value \
+    ///      outside the supported range of a `jiff::SignedDuration`: \
+    ///      parameter 'signed duration seconds' is not in the \
+    ///      required range of -9223372036854775808..=9223372036854775807",
     /// );
     /// ```
     ///
@@ -2277,7 +2292,8 @@ impl SignedDuration {
     /// assert_eq!(
     ///     SignedDuration::ZERO.round(Unit::Day).unwrap_err().to_string(),
     ///     "rounding `jiff::SignedDuration` failed \
-    ///      because a calendar unit of 'days' was provided \
+    ///      because the smallest unit provided, 'days', \
+    ///      is a calendar unit \
     ///      (to round by calendar units, you must use a `jiff::Span`)",
     /// );
     /// ```
@@ -2297,6 +2313,100 @@ impl SignedDuration {
 /// as efficiently outside of Jiff. If we exposed a `new_unchecked`
 /// constructor, then I believe that would be sufficient.
 impl SignedDuration {
+    /// Creates a signed duration from a 32-bit number of civil weeks. (That
+    /// is, every day is exactly 24 hours long and every week is 7 such days.)
+    ///
+    /// This is infallible. It can never panic.
+    #[inline]
+    pub(crate) const fn from_civil_weeks32(weeks: i32) -> SignedDuration {
+        SignedDuration::from_secs(
+            (weeks as i64)
+                * DAYS_PER_CIVIL_WEEK
+                * HOURS_PER_CIVIL_DAY
+                * MINS_PER_HOUR
+                * SECS_PER_MINUTE,
+        )
+    }
+
+    /// Creates a signed duration from a 32-bit number of civil days. (That is,
+    /// every day is exactly 24 hours long.)
+    ///
+    /// This is infallible. It can never panic.
+    #[inline]
+    pub(crate) const fn from_civil_days32(days: i32) -> SignedDuration {
+        SignedDuration::from_secs(
+            (days as i64)
+                * HOURS_PER_CIVIL_DAY
+                * MINS_PER_HOUR
+                * SECS_PER_MINUTE,
+        )
+    }
+
+    /// Like `SignedDuration::from_hours`, but for 32-bit integers
+    /// and thus infallible (including never panicking).
+    #[inline]
+    pub(crate) const fn from_hours32(hours: i32) -> SignedDuration {
+        SignedDuration::from_secs(
+            (hours as i64) * MINS_PER_HOUR * SECS_PER_MINUTE,
+        )
+    }
+
+    /// Like `SignedDuration::from_mins`, but for 32-bit integers
+    /// and thus infallible (including never panicking).
+    #[allow(dead_code)]
+    #[inline]
+    pub(crate) const fn from_mins32(mins: i32) -> SignedDuration {
+        SignedDuration::from_secs((mins as i64) * SECS_PER_MINUTE)
+    }
+
+    /// Returns the number of whole civil weeks in this duration.
+    #[inline]
+    pub(crate) const fn as_civil_weeks(&self) -> i64 {
+        self.as_secs()
+            / (DAYS_PER_CIVIL_WEEK
+                * HOURS_PER_CIVIL_DAY
+                * MINS_PER_HOUR
+                * SECS_PER_MINUTE)
+    }
+
+    /// Returns the number of whole civil days in this duration.
+    #[inline]
+    pub(crate) const fn as_civil_days(&self) -> i64 {
+        self.as_secs()
+            / (HOURS_PER_CIVIL_DAY * MINS_PER_HOUR * SECS_PER_MINUTE)
+    }
+
+    /// Returns the number of whole civil weeks in this duration (equivalent to
+    /// `SignedDuration::as_civil_weeks`) along with a duration equivalent to
+    /// the fractional remainder.
+    #[inline]
+    pub(crate) fn as_civil_weeks_with_remainder(
+        &self,
+    ) -> (i64, SignedDuration) {
+        let weeks = self.as_civil_weeks();
+        let secs = self.as_secs()
+            % (DAYS_PER_CIVIL_WEEK
+                * HOURS_PER_CIVIL_DAY
+                * MINS_PER_HOUR
+                * SECS_PER_MINUTE);
+        let rem = SignedDuration::new_unchecked(secs, self.subsec_nanos());
+        (weeks, rem)
+    }
+
+    /// Returns the number of whole civil days in this duration (equivalent to
+    /// `SignedDuration::as_civil_days`) along with a duration equivalent to
+    /// the fractional remainder.
+    #[inline]
+    pub(crate) fn as_civil_days_with_remainder(
+        &self,
+    ) -> (i64, SignedDuration) {
+        let days = self.as_civil_days();
+        let secs = self.as_secs()
+            % (HOURS_PER_CIVIL_DAY * MINS_PER_HOUR * SECS_PER_MINUTE);
+        let rem = SignedDuration::new_unchecked(secs, self.subsec_nanos());
+        (days, rem)
+    }
+
     /// Returns the number of whole hours in this duration (equivalent to
     /// `SignedDuration::as_hours`) along with a duration equivalent to the
     /// fractional remainder.
@@ -2398,32 +2508,79 @@ impl core::fmt::Debug for SignedDuration {
     }
 }
 
+/// Fallibly converts a [`std::time::Duration`] to a `SignedDuration`.
+///
+/// # Errors
+///
+/// This fails when the duration's second component exceeds `i64::MAX`.
+///
+/// # Examples
+///
+/// ```
+/// use std::time::Duration;
+///
+/// use jiff::SignedDuration;
+///
+/// let dur = Duration::new(5, 123_000_000);
+/// let sdur = SignedDuration::try_from(dur)?;
+/// assert_eq!(sdur, SignedDuration::new(5, 123_000_000));
+///
+/// let dur = Duration::new(i64::MAX as u64, 999_999_999);
+/// let sdur = SignedDuration::try_from(dur)?;
+/// assert_eq!(sdur, SignedDuration::new(i64::MAX, 999_999_999));
+///
+/// // Some failure cases:
+/// assert!(SignedDuration::try_from(Duration::new(i64::MAX as u64 + 1, 0)).is_err());
+/// assert!(SignedDuration::try_from(Duration::new(u64::MAX, 0)).is_err());
+///
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 impl TryFrom<Duration> for SignedDuration {
     type Error = Error;
 
     fn try_from(d: Duration) -> Result<SignedDuration, Error> {
         let secs = i64::try_from(d.as_secs())
-            .map_err(|_| Error::slim_range("unsigned duration seconds"))?;
+            .map_err(|_| b::SignedDurationSeconds::error())?;
         // Guaranteed to succeed since 0<=nanos<=999,999,999.
         let nanos = i32::try_from(d.subsec_nanos()).unwrap();
         Ok(SignedDuration::new_unchecked(secs, nanos))
     }
 }
 
+/// Fallibly converts a `SignedDuration` to a [`std::time::Duration`].
+///
+/// # Errors
+///
+/// This fails when the signed duration is negative.
+///
+/// # Examples
+///
+/// ```
+/// use std::time::Duration;
+///
+/// use jiff::SignedDuration;
+///
+/// let sdur = SignedDuration::new(5, 123_000_000);
+/// let dur = Duration::try_from(sdur)?;
+/// assert_eq!(dur, Duration::new(5, 123_000_000));
+///
+/// // Some failure cases:
+/// assert!(Duration::try_from(SignedDuration::new(-5, 0)).is_err());
+/// assert!(Duration::try_from(SignedDuration::new(-5, -1)).is_err());
+/// assert!(Duration::try_from(SignedDuration::new(0, -1)).is_err());
+///
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 impl TryFrom<SignedDuration> for Duration {
     type Error = Error;
 
     fn try_from(sd: SignedDuration) -> Result<Duration, Error> {
-        // This isn't needed, but improves error messages.
-        if sd.is_negative() {
-            return Err(Error::slim_range("negative duration seconds"));
-        }
         let secs = u64::try_from(sd.as_secs())
-            .map_err(|_| Error::slim_range("signed duration seconds"))?;
-        // Guaranteed to succeed because the above only succeeds
-        // when `sd` is non-negative. And when `sd` is non-negative,
-        // we are guaranteed that 0<=nanos<=999,999,999.
-        let nanos = u32::try_from(sd.subsec_nanos()).unwrap();
+            .map_err(|_| SpecialBoundsError::SignedToUnsignedDuration)?;
+        // This could still be negative in the case where
+        // `sd.as_secs()` is zero.
+        let nanos = u32::try_from(sd.subsec_nanos())
+            .map_err(|_| SpecialBoundsError::SignedToUnsignedDuration)?;
         Ok(Duration::new(secs, nanos))
     }
 }
@@ -2537,6 +2694,17 @@ impl core::ops::DivAssign<i32> for SignedDuration {
     #[inline]
     fn div_assign(&mut self, rhs: i32) {
         *self = *self / rhs;
+    }
+}
+
+#[cfg(feature = "defmt")]
+impl defmt::Format for SignedDuration {
+    fn format(&self, f: defmt::Formatter) {
+        use crate::fmt::DefmtWrite;
+
+        defmt::unwrap!(
+            friendly::DEFAULT_SPAN_PRINTER.print_duration(self, DefmtWrite(f))
+        );
     }
 }
 
@@ -2718,13 +2886,10 @@ impl SignedDurationRound {
     ///
     /// # Errors
     ///
-    /// The rounding increment must divide evenly into the next highest unit
-    /// after the smallest unit configured (and must not be equivalent to it).
-    /// For example, if the smallest unit is [`Unit::Nanosecond`], then *some*
-    /// of the valid values for the rounding increment are `1`, `2`, `4`, `5`,
-    /// `100` and `500`. Namely, any integer that divides evenly into `1,000`
-    /// nanoseconds since there are `1,000` nanoseconds in the next highest
-    /// unit (microseconds).
+    /// Unlike rounding a [`Span`](crate::Span), the increment does not need
+    /// to divide evenly into the next largest unit. Callers can round a
+    /// signed duration to any increment value so long as it is greater than
+    /// zero and less than or equal to `1_000_000_000`.
     ///
     /// # Example
     ///
@@ -2746,36 +2911,13 @@ impl SignedDurationRound {
         SignedDurationRound { increment, ..self }
     }
 
-    /// Returns the `smallest` unit configuration.
-    pub(crate) fn get_smallest(&self) -> Unit {
-        self.smallest
-    }
-
     /// Does the actual duration rounding.
     fn round(&self, dur: SignedDuration) -> Result<SignedDuration, Error> {
-        if self.smallest > Unit::Hour {
-            return Err(Error::from(E::RoundCalendarUnit {
-                unit: self.smallest,
-            }));
-        }
-        let nanos = t::NoUnits128::new_unchecked(dur.as_nanos());
-        let increment = t::NoUnits::new_unchecked(self.increment);
-        let rounded = self.mode.round_by_unit_in_nanoseconds(
-            nanos,
-            self.smallest,
-            increment,
-        );
-
-        let seconds = rounded / t::NANOS_PER_SECOND;
-        let seconds =
-            t::NoUnits::try_rfrom("seconds", seconds).map_err(|_| {
-                Error::from(E::RoundOverflowed { unit: self.smallest })
-            })?;
-        let subsec_nanos = rounded % t::NANOS_PER_SECOND;
-        // OK because % 1_000_000_000 above guarantees that the result fits
-        // in a i32.
-        let subsec_nanos = i32::try_from(subsec_nanos).unwrap();
-        Ok(SignedDuration::new(seconds.get(), subsec_nanos))
+        let increment =
+            Increment::for_signed_duration(self.smallest, self.increment)?;
+        increment
+            .round(self.mode, dur)
+            .with_context(|| E::RoundOverflowed { unit: self.smallest })
     }
 }
 

@@ -9,8 +9,7 @@ Refs:
 - MSP430x5xx and MSP430x6xx Family User's Guide, Rev. Q
   https://www.ti.com/lit/ug/slau208q/slau208q.pdf
 
-Generated asm:
-- msp430 https://godbolt.org/z/fc6h89xac
+See tests/asm-test/asm/portable-atomic for generated assembly.
 */
 
 #[cfg(not(portable_atomic_no_asm))]
@@ -67,8 +66,8 @@ pub(crate) unsafe fn restore(prev_sr: State) {
     // This clobbers the entire status register, but we never explicitly modify
     // flags within a critical session, and the only flags that may be changed
     // within a critical session are the arithmetic flags that are changed as
-    // a side effect of arithmetic operations, etc., which LLVM recognizes,
-    // so it is safe to clobber them here.
+    // a side effect of arithmetic operations, etc., which LLVM recognizes unless
+    // preserves_flags is set, so it is safe to clobber them here.
     // See also the discussion at https://github.com/taiki-e/portable-atomic/pull/40.
     //
     // See "NOTE: Enable and Disable Interrupt" of User's Guide for NOP: https://www.ti.com/lit/ug/slau208q/slau208q.pdf#page=60

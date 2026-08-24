@@ -16,32 +16,29 @@ s! {
         pub st_uid: crate::uid_t,
         pub st_gid: crate::gid_t,
         pub st_rdev: crate::dev_t,
-        pub __pad1: crate::dev_t,
+        __st_rdev_padding: Padding<crate::dev_t>,
         pub st_size: off_t,
         pub st_blksize: crate::blksize_t,
-        pub __pad2: c_int,
+        __st_blksize_padding: Padding<c_int>,
         pub st_blocks: crate::blkcnt_t,
-
-        #[cfg(not(musl_v1_2_3))]
         pub st_atime: crate::time_t,
-        #[cfg(not(musl_v1_2_3))]
+        #[cfg(all(musl32_time64, target_endian = "big"))]
+        __pad0: Padding<u32>,
         pub st_atime_nsec: c_long,
-        #[cfg(not(musl_v1_2_3))]
+        #[cfg(all(musl32_time64, target_endian = "little"))]
+        __pad0: Padding<u32>,
         pub st_mtime: crate::time_t,
-        #[cfg(not(musl_v1_2_3))]
+        #[cfg(all(musl32_time64, target_endian = "big"))]
+        __pad1: Padding<u32>,
         pub st_mtime_nsec: c_long,
-        #[cfg(not(musl_v1_2_3))]
+        #[cfg(all(musl32_time64, target_endian = "little"))]
+        __pad1: Padding<u32>,
         pub st_ctime: crate::time_t,
-        #[cfg(not(musl_v1_2_3))]
+        #[cfg(all(musl32_time64, target_endian = "big"))]
+        __pad2: Padding<u32>,
         pub st_ctime_nsec: c_long,
-
-        #[cfg(musl_v1_2_3)]
-        pub st_atim: crate::timespec,
-        #[cfg(musl_v1_2_3)]
-        pub st_mtim: crate::timespec,
-        #[cfg(musl_v1_2_3)]
-        pub st_ctim: crate::timespec,
-
+        #[cfg(all(musl32_time64, target_endian = "little"))]
+        __pad2: Padding<u32>,
         __unused: Padding<[c_int; 2usize]>,
     }
 

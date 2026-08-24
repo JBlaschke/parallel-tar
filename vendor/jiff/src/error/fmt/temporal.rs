@@ -1,6 +1,7 @@
 use crate::{error, tz::Offset, util::escape};
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub(crate) enum Error {
     #[cfg(not(feature = "alloc"))]
     AllocPosixTimeZone,
@@ -43,37 +44,17 @@ pub(crate) enum Error {
         byte: u8,
     },
     ExpectedWeekPrefixFoundEndOfInput,
-    FailedDayInDate,
-    FailedDayInMonthDay,
     FailedFractionalSecondInTime,
-    FailedHourInTime,
-    FailedMinuteInTime,
-    FailedMonthInDate,
-    FailedMonthInMonthDay,
-    FailedMonthInYearMonth,
     FailedOffsetNumeric,
-    FailedSecondInTime,
     FailedSeparatorAfterMonth,
     FailedSeparatorAfterWeekNumber,
     FailedSeparatorAfterYear,
     FailedTzdbLookup,
-    FailedWeekNumberInDate,
     FailedWeekNumberPrefixInDate,
-    FailedWeekdayInDate,
-    FailedYearInDate,
-    FailedYearInYearMonth,
     InvalidDate,
-    InvalidDay,
-    InvalidHour,
-    InvalidMinute,
-    InvalidMonth,
     InvalidMonthDay,
-    InvalidSecond,
     InvalidTimeZoneUtf8,
     InvalidWeekDate,
-    InvalidWeekNumber,
-    InvalidWeekday,
-    InvalidYear,
     InvalidYearMonth,
     InvalidYearZero,
     MissingOffsetInTimestamp,
@@ -227,31 +208,13 @@ impl core::fmt::Display for Error {
             ExpectedWeekPrefixFoundEndOfInput => {
                 f.write_str("expected `W` or `w`, but found end of input")
             }
-            FailedDayInDate => f.write_str("failed to parse day in date"),
-            FailedDayInMonthDay => {
-                f.write_str("failed to payse day in month-day")
-            }
             FailedFractionalSecondInTime => {
                 f.write_str("failed to parse fractional seconds in time")
-            }
-            FailedHourInTime => f.write_str("failed to parse hour in time"),
-            FailedMinuteInTime => {
-                f.write_str("failed to parse minute in time")
-            }
-            FailedMonthInDate => f.write_str("failed to parse month in date"),
-            FailedMonthInMonthDay => {
-                f.write_str("failed to parse month in month-day")
-            }
-            FailedMonthInYearMonth => {
-                f.write_str("failed to parse month in year-month")
             }
             FailedOffsetNumeric => f.write_str(
                 "offset successfully parsed, \
                  but failed to convert to numeric `jiff::tz::Offset`",
             ),
-            FailedSecondInTime => {
-                f.write_str("failed to parse second in time")
-            }
             FailedSeparatorAfterMonth => {
                 f.write_str("failed to parse separator after month")
             }
@@ -265,36 +228,16 @@ impl core::fmt::Display for Error {
                 "parsed apparent IANA time zone identifier, \
                  but the tzdb lookup failed",
             ),
-            FailedWeekNumberInDate => {
-                f.write_str("failed to parse week number in date")
-            }
             FailedWeekNumberPrefixInDate => {
                 f.write_str("failed to parse week number prefix in date")
             }
-            FailedWeekdayInDate => {
-                f.write_str("failed to parse weekday in date")
-            }
-            FailedYearInDate => f.write_str("failed to parse year in date"),
-            FailedYearInYearMonth => {
-                f.write_str("failed to parse year in year-month")
-            }
             InvalidDate => f.write_str("parsed date is not valid"),
-            InvalidDay => f.write_str("parsed day is not valid"),
-            InvalidHour => f.write_str("parsed hour is not valid"),
-            InvalidMinute => f.write_str("parsed minute is not valid"),
-            InvalidMonth => f.write_str("parsed month is not valid"),
             InvalidMonthDay => f.write_str("parsed month-day is not valid"),
-            InvalidSecond => f.write_str("parsed second is not valid"),
             InvalidTimeZoneUtf8 => f.write_str(
                 "found plausible IANA time zone identifier, \
                  but it is not valid UTF-8",
             ),
             InvalidWeekDate => f.write_str("parsed week date is not valid"),
-            InvalidWeekNumber => {
-                f.write_str("parsed week number is not valid")
-            }
-            InvalidWeekday => f.write_str("parsed weekday is not valid"),
-            InvalidYear => f.write_str("parsed year is not valid"),
             InvalidYearMonth => f.write_str("parsed year-month is not valid"),
             InvalidYearZero => f.write_str(
                 "year zero must be written without a sign or a \

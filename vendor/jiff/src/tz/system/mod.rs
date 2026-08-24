@@ -2,13 +2,15 @@ use std::{sync::RwLock, time::Duration};
 
 use alloc::string::ToString;
 
+use jcore::tz::posix;
+
 use crate::{
     error::{tz::system::Error as E, Error, ErrorContext},
-    tz::{posix::PosixTzEnv, TimeZone, TimeZoneDatabase},
+    tz::{TimeZone, TimeZoneDatabase},
     util::cache::Expiration,
 };
 
-#[cfg(all(unix, not(target_os = "android")))]
+#[cfg(all(unix, not(any(target_os = "android", target_os = "emscripten"))))]
 #[path = "unix.rs"]
 mod sys;
 
@@ -26,6 +28,10 @@ mod sys;
     target_os = "unknown"
 ))]
 #[path = "wasm_js.rs"]
+mod sys;
+
+#[cfg(all(target_family = "wasm", target_os = "emscripten"))]
+#[path = "wasm_emscripten.rs"]
 mod sys;
 
 #[cfg(not(any(
@@ -188,7 +194,7 @@ fn get_env_tz(db: &TimeZoneDatabase) -> Result<Option<TimeZone>, Error> {
         );
         return Ok(Some(TimeZone::UTC));
     }
-    let tz_name_or_path = match PosixTzEnv::parse_os_str(&tzenv) {
+    let tz_name_or_path = match posix::TzEnv::parse_os_str(&tzenv) {
         Err(_err) => {
             debug!(
                 "failed to parse {tzenv:?} as POSIX TZ rule \
@@ -196,8 +202,8 @@ fn get_env_tz(db: &TimeZoneDatabase) -> Result<Option<TimeZone>, Error> {
             );
             tzenv.to_str().ok_or(E::FailedPosixTzAndUtf8)?.to_string()
         }
-        Ok(PosixTzEnv::Implementation(string)) => string.to_string(),
-        Ok(PosixTzEnv::Rule(tz)) => {
+        Ok(posix::TzEnv::Implementation(string)) => string.to_string(),
+        Ok(posix::TzEnv::Rule(tz)) => {
             return Ok(Some(TimeZone::from_posix_tz(tz)))
         }
     };

@@ -29,6 +29,17 @@ use rayon::prelude::*;
 
 // ─── Streaming hash helpers (reader-based) ───────────────────────────────
 
+// sha2 >= 0.11 no longer implements LowerHex on the digest output; encode
+// the bytes ourselves.
+fn to_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        let _ = write!(s, "{:02x}", b);
+    }
+    s
+}
+
 /// Stream `r` to completion and return its MD5 digest as lowercase hex.
 /// Reads in 1 MiB chunks; never buffers the full content.
 pub fn hash_reader_md5<R: Read>(mut r: R) -> std::io::Result<String> {
@@ -52,7 +63,7 @@ pub fn hash_reader_sha256<R: Read>(mut r: R) -> std::io::Result<String> {
         if n == 0 { break; }
         hasher.update(&buffer[..n]);
     }
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(to_hex(&hasher.finalize()))
 }
 
 fn hash_file_md5(path: &Path) -> std::io::Result<String> {
@@ -70,7 +81,7 @@ fn hash_string_md5(s: &str) -> String {
 fn hash_string_sha256(s: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(s.as_bytes());
-    format!("{:x}", hasher.finalize())
+    to_hex(&hasher.finalize())
 }
 
 // ─── Trait ───────────────────────────────────────────────────────────────

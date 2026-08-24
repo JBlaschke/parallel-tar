@@ -37,10 +37,10 @@ fn __cpuid(leaf: u32) -> CpuidResult {
     // https://github.com/rust-lang/stdarch/blob/a0c30f3e3c75adcd6ee7efc94014ebcead61c507/crates/core_arch/src/x86/cpuid.rs#L102-L109
     unsafe {
         asm!(
-            "mov {ebx_tmp:r}, rbx", // save rbx which is reserved by LLVM
+            "mov r8, rbx", // save rbx which is reserved by LLVM
             "cpuid",
-            "xchg {ebx_tmp:r}, rbx", // restore rbx
-            ebx_tmp = out(reg) ebx,
+            "xchg r8, rbx", // restore rbx
+            out("r8") ebx,
             inout("eax") leaf => eax,
             inout("ecx") 0 => ecx,
             out("edx") edx,
@@ -51,7 +51,8 @@ fn __cpuid(leaf: u32) -> CpuidResult {
 }
 
 #[cold]
-fn _detect(info: &mut CpuInfo) {
+#[must_use]
+fn _detect(mut info: CpuInfo) -> CpuInfo {
     let CpuidResult { ecx: proc_info_ecx, .. } = __cpuid(1);
 
     // https://github.com/rust-lang/rust/blob/1.92.0/library/std_detect/src/detect/os/x86.rs#L104
@@ -79,6 +80,7 @@ fn _detect(info: &mut CpuInfo) {
             }
         }
     }
+    info
 }
 
 #[allow(
