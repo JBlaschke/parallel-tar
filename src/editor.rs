@@ -1,4 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+
+//! `edit-idx` — structurally edit index files: `init` an empty stub, `rm` a
+//! subtree, `add` (splice in) a subtree from another index, and `finalize`
+//! to re-aggregate metadata and directory hashes.
+//!
+//! The structural operations never hash or aggregate; they mark the edit
+//! path stale (metadata/hash = `None`) and share all unchanged subtrees via
+//! `Arc` (the "path copy" pattern), so repeated edits stay cheap and the
+//! cost of aggregation is paid once, in `finalize`.
+
 use std::error::Error;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};

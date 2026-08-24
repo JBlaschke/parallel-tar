@@ -1,4 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+
+//! Build an index tree by walking the live filesystem.
+//!
+//! This is the single-threaded directory walk behind `parallel-idx` (and
+//! `parallel-idx -e`): it records structure and file sizes only — metadata
+//! aggregation and hashing happen in later, parallel passes.
+
 use crate::index::tree::{TreeNode, NodeType};
 use crate::index::error::IndexerError;
 // Working with references and concurrent access
@@ -10,13 +17,25 @@ use std::path::{Path, PathBuf};
 // Logging
 use log::warn;
 
+/// Construct tree nodes from filesystem paths.
+///
+/// `follow_symlinks` recurses through link targets instead of recording
+/// [`NodeType::Symlink`] nodes (and implies `valid_symlinks_only`);
+/// `valid_symlinks_only` makes dangling symlinks an error instead of
+/// recording them with their own path as the target.
 pub trait Filesystem {
+    /// Classify the object at `path` (statting, but not following, symlinks
+    /// unless `follow_symlinks`). Directories are recursed into, so this
+    /// builds the entire subtree's [`NodeType`].
     fn node_type_from_path(
         path: impl AsRef<Path>,
         follow_symlinks: bool,
         valid_symlinks_only: bool
     ) -> Result<NodeType, IndexerError>;
 
+    /// Recursively build a tree rooted at `path`. Unreadable entries become
+    /// [`NodeType::Unknown`] nodes (with a warning) rather than aborting
+    /// the walk.
     fn from_path(
         path: impl AsRef<Path>,
         follow_symlinks: bool,

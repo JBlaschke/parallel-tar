@@ -1,7 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+
+//! Error type shared by all index operations.
+
 use std::error::Error;
 use std::fmt;
 
+/// Anything that can go wrong while building, hashing, (de)serializing, or
+/// resolving paths in an index. Converts (via `From`) from the underlying
+/// I/O, serde, and lock-poisoning errors so `?` works throughout the
+/// [`crate::index`] module.
 #[derive(Debug)]
 pub enum IndexerError {
     Json(serde_json::Error),

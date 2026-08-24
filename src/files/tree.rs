@@ -1,4 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+
+//! Convert a saved index back into a work list for the archiver.
+//!
+//! This is the bridge used by `parallel-tar -t`: instead of walking the
+//! filesystem a second time, the archiver replays the paths recorded in an
+//! index (typically an "empty tree" `.etr` produced by `parallel-idx -e`).
+
 use crate::index::serialize::{DataFmt, load_tree};
 use crate::index::tree::NodeType;
 use crate::files::path::analyze_path;
@@ -9,6 +16,15 @@ use log::{info, debug};
 // Paths
 use std::path::PathBuf;
 
+/// Load the index at `index_path` (JSON if `json_fmt`, MessagePack `.idx`
+/// otherwise) and flatten it into the list of paths to archive, sorted
+/// largest-first so big entries are dispatched to workers early.
+///
+/// Returns `(base_dir, paths)`. When the index was built from an absolute
+/// path, `base_dir` is `Some(parent_of_root)` and every returned path is
+/// relative to it — the caller is expected to `chdir` there (mirroring how
+/// `tar` stores relative entries). When the index was built from a relative
+/// path, `base_dir` is `None` and the paths are returned as stored.
 pub fn files_from_tree(
             json_fmt: &bool, index_path: &String
         ) -> Result<(Option<PathBuf>, Vec<String>), Error> {

@@ -1,4 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+
+//! Content hashing: fill in file hashes, then aggregate them up the tree.
+//!
+//! Hashing an index is a two-pass affair, exposed by the [`HashedNodes`]
+//! trait:
+//!
+//! 1. [`HashedNodes::fill_hashes`] reads file contents (from disk, in
+//!    parallel) and caches a hash on every `File` node.
+//! 2. [`HashedNodes::compute_hashes`] aggregates purely in memory: a
+//!    directory's hash is the hash of its children's sorted
+//!    `name || hash` concatenation, so the root hash summarizes the whole
+//!    tree.
+//!
+//! The streaming helpers [`hash_reader_md5`] / [`hash_reader_sha256`] are
+//! shared with archive verification, which hashes tar entry streams instead
+//! of on-disk files (see [`crate::archive::verify`]).
+
 use crate::index::tree::{TreeNode, NodeType};
 use crate::index::error::IndexerError;
 
@@ -12,6 +29,8 @@ use rayon::prelude::*;
 
 // ─── Streaming hash helpers (reader-based) ───────────────────────────────
 
+/// Stream `r` to completion and return its MD5 digest as lowercase hex.
+/// Reads in 1 MiB chunks; never buffers the full content.
 pub fn hash_reader_md5<R: Read>(mut r: R) -> std::io::Result<String> {
     let mut context = md5::Context::new();
     let mut buffer = vec![0u8; 1048576];
@@ -23,6 +42,8 @@ pub fn hash_reader_md5<R: Read>(mut r: R) -> std::io::Result<String> {
     Ok(format!("{:x}", context.finalize()))
 }
 
+/// Stream `r` to completion and return its SHA-256 digest as lowercase hex.
+/// Reads in 1 MiB chunks; never buffers the full content.
 pub fn hash_reader_sha256<R: Read>(mut r: R) -> std::io::Result<String> {
     let mut hasher = Sha256::new();
     let mut buffer = vec![0u8; 1048576];
@@ -54,6 +75,9 @@ fn hash_string_sha256(s: &str) -> String {
 
 // ─── Trait ───────────────────────────────────────────────────────────────
 
+/// The two hashing passes over an index tree: `fill_hashes` (disk I/O) and
+/// `compute_hashes` (in-memory aggregation). See the module docs for how
+/// they compose.
 pub trait HashedNodes {
     /// Aggregate hashes throughout the tree, propagating `None` upward where
     /// leaves are unhashed. NEVER reads from the filesystem.

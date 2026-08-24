@@ -1,4 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+
+//! `parallel-idx` — build an index (directory tree + sizes + content
+//! hashes) of a directory.
+//!
+//! With `-e` only the tree structure is saved (an "empty tree" `.etr`);
+//! with `-t` an existing tree file is loaded instead of walking the
+//! filesystem, and its metadata and hashes are filled in using `-n`
+//! parallel workers. See the crate-level docs of [`ptar_lib`] for the full
+//! workflow.
+
 // Stdlib
 use std::sync::Arc;
 use std::error::Error;

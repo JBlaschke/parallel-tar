@@ -1,4 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+
+//! Resolve user-supplied sub-paths within an index tree.
+//!
+//! Resolution walks [`TreeNode::name`] segments, *not* the stored
+//! `TreeNode::path` field — so `data/LCLS` matches whether the index was
+//! built from `/global/projects/data/LCLS` or just `data/LCLS`. This is
+//! the convention shared by `view-idx -p`, `diff-idx -p`, and the
+//! `edit-idx` path arguments.
+
 use crate::index::tree::TreeNode;
 
 use std::path::{Component, Path};

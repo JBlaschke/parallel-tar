@@ -1,4 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+
+//! `view-idx` — inspect a `.idx`/`.etr`/`.json` index: summary metadata, a
+//! tree view (depth-capped with `-L`, scoped to a sub-path with `-p`), and
+//! the largest entries.
+
 // Stdlib
 use std::error::Error;
 use std::sync::Arc;
