@@ -82,8 +82,8 @@ impl<T: Clone> From<ArchiverError<RTAET<T>>> for ArchiverError<T> {
             ArchiverError::WalkdirError(e) => Self::WalkdirError(e),
             ArchiverError::TryRecvError(e) => Self::TryRecvError(e),
             ArchiverError::RecvTimeoutError(e) => Self::RecvTimeoutError(e),
-            ArchiverError::SendError(e) => {
-                match e.into_inner() {
+            ArchiverError::SendError(SendError(msg)) => {
+                match msg {
                     Ok(value) => ArchiverError::SendError(SendError(value)),
                     Err(inner_error) => inner_error
                 }
