@@ -9,6 +9,8 @@
 //! given by `-f`. See the crate-level docs of [`ptar_lib`] for the full
 //! workflow.
 
+mod cli;
+
 // Clap
 use clap::{Arg, ArgGroup, Command, value_parser};
 // Stdlib
@@ -17,9 +19,19 @@ use std::path::{Path, PathBuf};
 // Logging
 use log::info;
 
-use ptar_lib::archive::tar::{create, extract};
+use ptar_lib::archive::tar::{create_with_retries, extract_with_retries};
 
-fn main() -> Result<(), Box<dyn Error>> {
+fn main() -> std::process::ExitCode {
+    match run() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("Error: {e}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+fn run() -> Result<(), Box<dyn Error>> {
     // By default emit warnings
     env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or("info")
@@ -131,6 +143,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             .required(false)
             .num_args(0)
         )
+        .arg(cli::retry_on_timeout())
         .get_matches();
 
     fn get_arg<'a, T: Clone + Send + Sync + 'static>(
@@ -150,25 +163,26 @@ fn main() -> Result<(), Box<dyn Error>> {
     let json_fmt: &bool       = get_arg(&args, "json_fmt")?;
     let compress: &bool       = get_arg(&args, "compress")?;
     let use_md5: &bool        = get_arg(&args, "use_md5")?;
+    let max_retries = *get_arg::<Option<u64>>(&args, "retry_on_timeout")?;
 
     let root:    Option<&PathBuf> = args.get_one::<PathBuf>("root");
 
     if *create_mode {
-        create(
+        create_with_retries(
             archive_name, target, num_threads, follow_links,
-            from_tree, json_fmt, compress
+            from_tree, json_fmt, compress, max_retries
         )?;
     } else if *extract_mode {
-        extract(archive_name, target, num_threads, compress)?;
+        extract_with_retries(archive_name, target, num_threads, compress, max_retries)?;
     } else if *verify_mode {
-        use ptar_lib::archive::verify::verify;
+        use ptar_lib::archive::verify::verify_with_retries;
         use ptar_lib::index::serialize::{save_tree, DataFmt};
         use ptar_lib::index::HashedNodes;            // for compute_hashes
 
         let root_path: Option<&Path> = root.map(|p| p.as_path());
 
-        let tree = verify(
-            target, num_threads, compress, use_md5, root_path,
+        let tree = verify_with_retries(
+            target, num_threads, compress, use_md5, root_path, max_retries,
         )?;
 
         // metadata is uncomputed; root hash should be computed once.

@@ -18,12 +18,14 @@
 
 use crate::index::tree::{TreeNode, NodeType};
 use crate::index::error::IndexerError;
+use crate::retry::TimeoutRetries;
 
 use md5;
 use sha2::{Sha256, Digest};
 use std::fs::File;
-use std::io::{BufReader, Read};
+use std::io::{self, BufReader, Read};
 use std::path::Path;
+use std::time::Duration;
 use log::warn;
 use rayon::prelude::*;
 
@@ -66,12 +68,17 @@ pub fn hash_reader_sha256<R: Read>(mut r: R) -> std::io::Result<String> {
     Ok(to_hex(&hasher.finalize()))
 }
 
-fn hash_file_md5(path: &Path) -> std::io::Result<String> {
-    hash_reader_md5(BufReader::new(File::open(path)?))
-}
-
-fn hash_file_sha256(path: &Path) -> std::io::Result<String> {
-    hash_reader_sha256(BufReader::new(File::open(path)?))
+fn hash_file_with_retries<R: Read>(
+    path: &Path,
+    use_md5: bool,
+    max_retries: Option<u64>,
+    mut open: impl FnMut(&Path) -> io::Result<R>,
+    sleep: impl FnMut(Duration),
+) -> io::Result<String> {
+    TimeoutRetries::new(max_retries).run(path, || {
+        let reader = BufReader::new(open(path)?);
+        if use_md5 { hash_reader_md5(reader) } else { hash_reader_sha256(reader) }
+    }, sleep)
 }
 
 fn hash_string_md5(s: &str) -> String {
@@ -109,8 +116,8 @@ pub trait HashedNodes {
     /// propagate.
     ///
     /// Returns the number of files newly hashed. Files whose paths can't be
-    /// opened produce a warning and leave `hash == None`; the tree remains
-    /// partial in that case.
+    /// opened or read produce a warning and leave `hash == None`. To retry
+    /// timed-out files, use [`TreeNode::fill_hashes_with_retries`].
     fn fill_hashes(&self, use_md5: bool) -> Result<usize, IndexerError>;
 }
 
@@ -180,9 +187,22 @@ impl HashedNodes for TreeNode {
     }
 
     fn fill_hashes(&self, use_md5: bool) -> Result<usize, IndexerError> {
+        self.fill_hashes_with_retries(use_md5, Some(0))
+    }
+}
+
+impl TreeNode {
+    /// Fill missing file hashes as in [`HashedNodes::fill_hashes`]. On an
+    /// open or read timeout, reopen the file and hash it from the beginning.
+    /// `Some(n)` allows up to `n` retries per file. Use `None` for unlimited retries.
+    pub fn fill_hashes_with_retries(
+        &self,
+        use_md5: bool,
+        max_retries: Option<u64>,
+    ) -> Result<usize, IndexerError> {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let total = AtomicUsize::new(0);
-        fill_recursive(self, use_md5, &total)?;
+        fill_recursive(self, use_md5, max_retries, &total)?;
         Ok(total.load(Ordering::Relaxed))
     }
 }
@@ -190,6 +210,7 @@ impl HashedNodes for TreeNode {
 fn fill_recursive(
     node: &TreeNode,
     use_md5: bool,
+    max_retries: Option<u64>,
     total: &std::sync::atomic::AtomicUsize,
 ) -> Result<(), IndexerError> {
     use std::sync::atomic::Ordering;
@@ -198,11 +219,13 @@ fn fill_recursive(
             if node.hash.read()?.is_some() {
                 return Ok(());
             }
-            let result = if use_md5 {
-                hash_file_md5(&node.path)
-            } else {
-                hash_file_sha256(&node.path)
-            };
+            let result = hash_file_with_retries(
+                &node.path,
+                use_md5,
+                max_retries,
+                |path| File::open(path),
+                std::thread::sleep,
+            );
             match result {
                 Ok(h) => {
                     let mut guard = node.hash.write()?;
@@ -217,7 +240,7 @@ fn fill_recursive(
         NodeType::Directory { children } => {
             children
                 .par_iter()
-                .try_for_each(|child| fill_recursive(child, use_md5, total))?;
+                .try_for_each(|child| fill_recursive(child, use_md5, max_retries, total))?;
         }
         _ => {}
     }
@@ -249,6 +272,77 @@ mod tests {
 
     fn dir(name: &str, children: Vec<Arc<TreeNode>>) -> Arc<TreeNode> {
         node(name, NodeType::Directory { children })
+    }
+
+    #[test]
+    fn open_and_midstream_timeouts_restart_the_hash() {
+        struct TimedOutReader;
+        impl Read for TimedOutReader {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                Err(io::ErrorKind::TimedOut.into())
+            }
+        }
+
+        for (use_md5, expected) in [
+            (true, hash_string_md5("abc")),
+            (false, hash_string_sha256("abc")),
+        ] {
+            let attempts: [io::Result<Box<dyn Read>>; 3] = [
+                Err(io::ErrorKind::TimedOut.into()),
+                Ok(Box::new(b"ab".as_slice().chain(TimedOutReader))),
+                Ok(Box::new(b"abc".as_slice())),
+            ];
+            let mut attempts = attempts.into_iter();
+            let mut delays = Vec::new();
+            let hash = hash_file_with_retries(
+                Path::new("file"),
+                use_md5,
+                Some(2),
+                |_| attempts.next().unwrap(),
+                |delay| delays.push(delay.as_secs()),
+            )
+            .unwrap();
+            assert_eq!(hash, expected);
+            assert_eq!(delays, [1, 2]);
+        }
+    }
+
+    #[test]
+    fn retry_limit_counts_extra_attempts() {
+        for limit in [0, 2] {
+            let mut opens = 0;
+            let mut waits = 0;
+            let result = hash_file_with_retries(
+                Path::new("file"),
+                false,
+                Some(limit),
+                |_| -> io::Result<io::Empty> {
+                    opens += 1;
+                    assert!(opens <= limit + 1);
+                    Err(io::ErrorKind::TimedOut.into())
+                },
+                |_| waits += 1,
+            );
+            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::TimedOut);
+            assert_eq!(opens, limit + 1);
+            assert_eq!(waits, limit);
+        }
+    }
+
+    #[test]
+    fn unlimited_retries_back_off_and_stop_on_other_errors() {
+        let mut errors = std::iter::repeat_n(io::ErrorKind::TimedOut, 7)
+            .chain([io::ErrorKind::PermissionDenied]);
+        let mut delays = Vec::new();
+        let result = hash_file_with_retries(
+            Path::new("file"),
+            false,
+            None,
+            |_| -> io::Result<io::Empty> { Err(errors.next().unwrap().into()) },
+            |delay| delays.push(delay.as_secs()),
+        );
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(delays, [1, 2, 4, 8, 16, 30, 30]);
     }
 
     // Index hashes are the product's core promise (byte-for-byte archive

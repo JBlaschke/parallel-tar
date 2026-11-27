@@ -805,14 +805,34 @@ fn append_file(
         append_extended_sparse_headers(dst, &sparse_entries)?;
         for entry in sparse_entries.entries {
             file.seek(io::SeekFrom::Start(entry.offset))?;
-            io::copy(&mut file.take(entry.num_bytes), dst)?;
+            copy_file_data(&mut file.take(entry.num_bytes), dst, entry.num_bytes)?;
         }
         pad_zeroes(dst, sparse_entries.on_disk_size)?;
     } else {
-        let len = io::copy(file, dst)?;
-        pad_zeroes(dst, len)?;
+        let size = stat.len();
+        copy_file_data(&mut file.take(size.saturating_add(1)), dst, size)?;
+        pad_zeroes(dst, size)?;
     }
 
+    Ok(())
+}
+
+// A reader may report EOF before the size used to construct the header.
+// Padding or starting the next member at that point would corrupt the tar.
+fn copy_file_data(src: &mut dyn Read, dst: &mut dyn Write, expected: u64) -> io::Result<()> {
+    let copied = io::copy(src, dst)?;
+    if copied < expected {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            format!("source ended after {copied} of {expected} declared bytes"),
+        ));
+    }
+    if copied > expected {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("source exceeds its declared size of {expected} bytes"),
+        ));
+    }
     Ok(())
 }
 

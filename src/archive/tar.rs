@@ -11,19 +11,21 @@
 use crate::files::path::{
     DirPlan, analyze_path, sanitize_rel_path, set_chmod_plan, apply_chmod_plan
 };
-use crate::files::tree::files_from_tree;
+use crate::files::tree::files_from_tree_with_retries;
 use crate::archive::mutex::Pipe;
 use crate::archive::error::ArchiverError;
-use crate::archive::fs::{is_symlink, set_mode_from_path_or_default, find_files};
+use crate::archive::entry::{append_with_retries, EntryWriter};
+use crate::archive::join_workers;
+use crate::archive::fs::{find_files_with_retries, open_shard, set_mode_from_metadata};
+use crate::retry::TimeoutRetries;
 
 // Tar files
-use tar::{Builder, Header, EntryType, Archive};
+use tar::{Builder, Header, EntryType};
 // Compression
 use flate2::Compression;
 use flate2::write::GzEncoder;
-use flate2::read::GzDecoder;
 // File system
-use std::fs::{File, read_link, create_dir_all};
+use std::fs::{self, File, read_link, create_dir_all};
 // Multi-threading
 use std::thread;
 use std::thread::JoinHandle;
@@ -33,72 +35,77 @@ use log::{error, warn, info, debug};
 // Working with cwd
 use std::env::{current_dir, set_current_dir};
 use std::path::{Path, PathBuf};
-// Working with Boxed I/O (for compile-time compression flag)
-use std::io::{Write, Read};
+use std::io::{self, Write};
 // Use HashSet to track the completed items, which makes later lookup faster
 use std::collections::HashSet;
 
 fn create_worker_thread(
-            output_tar_path: &PathBuf,
+            output_tar_path: &Path,
             pipe_work: &Pipe<String>,
             pipe_results: &Pipe<Result<String, ArchiverError<String>>>,
-            compress: &bool
+            compress: bool,
+            max_retries: Option<u64>,
         ) -> Result<(), ArchiverError<String>> {
-    let output_file = File::create(output_tar_path)?;
-    let writer: Box<dyn Write> = if *compress {
-        Box::new(GzEncoder::new(output_file, Compression::default()))
+    let partial = output_tar_path.with_extension(if compress { "gz.partial" } else { "tar.partial" });
+    let mut file = File::create_new(&partial)?;
+    if compress {
+        let mut encoder = GzEncoder::new(file, Compression::default());
+        write_shard(&mut encoder, pipe_work, pipe_results, max_retries)?;
+        encoder.finish()?.flush()?;
     } else {
-        Box::new(output_file)
-    };
-    let mut archive = Builder::new(writer);
+        write_shard(&mut file, pipe_work, pipe_results, max_retries)?;
+        file.flush()?;
+        drop(file);
+    }
+    fs::rename(partial, output_tar_path)?;
+    Ok(())
+}
 
+fn append_entry<W: Write>(archive: &mut Builder<W>, path: &Path) -> io::Result<()> {
+    let metadata = path.symlink_metadata()?;
+    if metadata.is_symlink() {
+        let mut header = Header::new_gnu();
+        header.set_entry_type(EntryType::Symlink);
+        header.set_size(0);
+        set_mode_from_metadata(&mut header, path, &metadata);
+        archive.append_link(&mut header, path, read_link(path)?)
+    } else {
+        archive.append_path(path)
+    }
+}
+
+fn write_shard<W: Write>(
+    writer: W,
+    pipe_work: &Pipe<String>,
+    pipe_results: &Pipe<Result<String, ArchiverError<String>>>,
+    max_retries: Option<u64>,
+) -> Result<(), ArchiverError<String>> {
+    let mut archive = Builder::new(EntryWriter::new(writer));
     loop {
         match pipe_work.take_try_many() {
             Ok(input) => {
-                if is_symlink(& input) {
-                    // Symlink => configure header
-                    let mut header = Header::new_gnu();
-                    header.set_entry_type(EntryType::Symlink);
-                    header.set_size(0);
-                    // If there is an issue with reading the link (e.g. the file
-                    // permissions), this will default to standard metadata and
-                    // proceed with those
-                    set_mode_from_path_or_default(&mut header, & input);
-                    let link_target = match read_link(& input) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            pipe_results.send(Err(e.into()))?;
-                            continue;
-                        }
-                    };
-                    let _ = header.set_link_name(& link_target);
-                    // Add link to tar
-                    match archive.append_link(
-                        &mut header, & input, & link_target
-                    ) {
-                        Ok(_)  => (),
-                        Err(e) => {
-                            pipe_results.send(Err(e.into()))?;
-                            continue;
-                        }
-                    };
-                } else {
-                    // File => simply append file
-                    match archive.append_path(input.clone()) {
-                        Ok(_)  => (),
-                        Err(e) => {
-                            pipe_results.send(Err(e.into()))?;
-                            continue;
-                        }
+                let path = Path::new(&input);
+                if let Err(e) = append_with_retries(
+                    &mut archive, path, max_retries,
+                    |archive| append_entry(archive, path), thread::sleep,
+                ) {
+                    let error = io::Error::new(e.kind(), format!("archiving {path:?}: {e}"));
+                    if !archive.get_ref().can_skip_entry()
+                        || (max_retries != Some(0) && e.kind() == io::ErrorKind::TimedOut)
+                    {
+                        return Err(error.into());
                     }
+                    pipe_results.send(Err(error.into()))?;
+                    continue;
                 }
                 // Used to check work that has been done
                 pipe_results.send(Ok(input))?;
             },
+            Err(ArchiverError::ChannelClosed) => break,
             Err(error) => {
                 // Check if work is done
                 if pipe_work.get_completed()? {
-                    return Ok(());
+                    break;
                 }
                 // If not => log the error and wait for the channel to be set to
                 // completed
@@ -110,6 +117,8 @@ fn create_worker_thread(
             }
         }
     }
+    archive.finish()?;
+    Ok(())
 }
 
 fn scan_dirs_worker_thread(
@@ -118,19 +127,12 @@ fn scan_dirs_worker_thread(
             pipe_results: &Pipe<String>,
             compress: &bool,
             priority: usize,
-            plan: Arc<Mutex<DirPlan>>
+            plan: Arc<Mutex<DirPlan>>,
+            retries: &mut TimeoutRetries,
         ) -> Result<(), ArchiverError<String>> {
 
-    let input_file = File::open(tar_path)?;
-
-    let reader: Box<dyn Read> = if *compress {
-        Box::new(GzDecoder::new(input_file))
-    } else {
-        Box::new(input_file)
-    };
-
     let destination_path = PathBuf::from(destination);
-    let mut archive = Archive::new(reader);
+    let mut archive = open_shard(tar_path, *compress, retries)?;
 
     for entry_res in archive.entries()? {
         let entry = entry_res?;
@@ -166,18 +168,11 @@ fn scan_dirs_worker_thread(
 fn extract_worker_thread(
             tar_path: &str,
             destination: &str,
-            compress: &bool
+            compress: &bool,
+            retries: &mut TimeoutRetries,
         ) -> Result<(), ArchiverError<String>> {
 
-    let input_file = File::open(tar_path)?;
-
-    let reader: Box<dyn Read> = if *compress {
-        Box::new(GzDecoder::new(input_file))
-    } else {
-        Box::new(input_file)
-    };
-
-    let mut archive = Archive::new(reader);
+    let mut archive = open_shard(tar_path, *compress, retries)?;
 
     for entry_res in archive.entries()? {
         let mut entry = entry_res?;
@@ -226,12 +221,28 @@ pub fn create(
             json_fmt: &bool,
             compress: &bool
         ) -> Result<(), ArchiverError<String>> {
+    create_with_retries(
+        archive_name, target, num_threads, follow_links, from_tree, json_fmt, compress, Some(0),
+    )
+}
+
+/// Like [`create`], with a timeout retry limit per source entry (`None` for unlimited).
+pub fn create_with_retries(
+    archive_name: &String,
+    target: &String,
+    num_threads: &u32,
+    follow_links: &bool,
+    from_tree: &bool,
+    json_fmt: &bool,
+    compress: &bool,
+    max_retries: Option<u64>,
+) -> Result<(), ArchiverError<String>> {
     let mut pipe_work = Pipe::<String>::new();
-    let pipe_results = Pipe::<Result<String, ArchiverError<String>>>::new();
+    let mut pipe_results = Pipe::<Result<String, ArchiverError<String>>>::new();
 
     let mut tfiles: Vec<String> = Vec::new();
     let (base, rel) = if *from_tree {
-        let (tbase, ifiles) = files_from_tree(json_fmt, target)?;
+        let (tbase, ifiles) = files_from_tree_with_retries(json_fmt, target, max_retries)?;
         tfiles = ifiles;
         (tbase, PathBuf::new()) // IMPORTANT: 'rel' not used if building from tree
     } else {
@@ -258,27 +269,21 @@ pub fn create(
 
     info!("Saving archive to: '{}'", archive_dest.to_string_lossy());
 
-    let archive_path = Path::new(&archive_dest);
-    if archive_path.exists() {
-        error!("Path '{}' not free", archive_dest.to_string_lossy());
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists, "Destination path not free."
-        ).into());
-    } else {
-        debug!(
-            "Creating destination folder: {}", archive_dest.to_string_lossy()
-        );
-        create_dir_all(&archive_dest)?;
+    if let Some(parent) = archive_dest.parent() {
+        create_dir_all(parent)?;
     }
+    // Claim the shard directory atomically, including on concurrent create runs.
+    fs::create_dir(&archive_dest)?;
+    let stem = archive_dest.file_name().and_then(|s| s.to_str())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing archive name"))?;
 
     // This must happen BEFORE the threads are spawned, otherwise they will fail
     // while trying to receive data from empty channels.
     info!("SETUP: Enumerating files. Following links? {}", follow_links);
     let work_items = if *from_tree {
-        // files_from_tree(json_fmt, target)?
         tfiles
     } else {
-        find_files(&rel, *follow_links)?
+        find_files_with_retries(&rel, *follow_links, max_retries)?
     };
 
     // Spawn worker num_threads
@@ -291,13 +296,14 @@ pub fn create(
         // Per-thread (local) copies of the work and results pipes => avoid
         // moving their originals out of this scope by the `move` closure in
         // `thread::spawn`
-        let loc_work    = pipe_work.clone();
+        let mut loc_work = pipe_work.clone();
+        loc_work.close(); // Workers only receive work.
         let loc_results = pipe_results.clone();
         // Initiate worker thread and "point" them to `name.<thread>.tar`
         let name = if loc_compress {
-            format!("{}.{}.tar.gz", archive_name, idx)
+            format!("{stem}.{idx}.tar.gz")
         } else {
-            format!("{}.{}.tar", archive_name, idx)
+            format!("{stem}.{idx}.tar")
         };
         let out = archive_dest.join(name);
         info!(
@@ -307,7 +313,7 @@ pub fn create(
         handles.push(
             thread::spawn(move || -> Result<(), ArchiverError<String>> {
                 match create_worker_thread(
-                            &out, &loc_work, &loc_results, &loc_compress
+                            &out, &loc_work, &loc_results, loc_compress, max_retries
                         ) {
                     Err(e) => {
                         error!("Error from spawned 'create' thread: '{}'", e);
@@ -322,6 +328,7 @@ pub fn create(
         );
     }
 
+    pipe_results.close(); // Only workers send results.
     // Add work to the work channel
     info!("Sending paths to workers. This will start the archiving files...");
     for work_item in & work_items {
@@ -330,9 +337,7 @@ pub fn create(
             warn!("Failed to process '{}', due to error: '{}'", work_item, err)
         });
     }
-    // All work has been submitted => close this (the producing) end of the
-    // work pipe. The workers hold their own clones, so the channel fully
-    // disconnects once they finish and drop theirs.
+    // Workers see ChannelClosed once they have drained the submitted work.
     pipe_work.close();
 
     info!("Collecting worker status (workers are working) ...");
@@ -340,12 +345,7 @@ pub fn create(
     pipe_work.set_completed()?;
 
     info!(" ... waiting for workers to finish ...");
-    for h in handles {
-        h.join().unwrap_or_else( |err| {
-            warn!("Failed thread join: '{:?}'", err);
-            Ok(())
-        })?;
-    }
+    join_workers(handles)?;
     info!(" ... workers are done!");
     pipe_results.set_completed()?;
 
@@ -387,7 +387,17 @@ pub fn extract(
             num_threads: &u32,
             compress: &bool
         ) -> Result<(), ArchiverError<String>> {
+    extract_with_retries(archive_name, target, num_threads, compress, Some(0))
+}
 
+/// Like [`extract`], with one timeout retry limit per shard across both passes.
+pub fn extract_with_retries(
+    archive_name: &String,
+    target: &String,
+    num_threads: &u32,
+    compress: &bool,
+    max_retries: Option<u64>,
+) -> Result<(), ArchiverError<String>> {
     let plan = Arc::new(Mutex::new(DirPlan::default()));
     let loc_compress = *compress;
 
@@ -395,9 +405,7 @@ pub fn extract(
     info!("SETUP for PHASE 1: Starting {} worker threads", num_threads);
 
     let mut pipe_dirs = Pipe::<String>::new();
-    let mut scan_handles: Vec<
-            JoinHandle<Result<(), ArchiverError<String>>>
-        > = Vec::with_capacity(*num_threads as usize);
+    let mut scan_handles = Vec::with_capacity(*num_threads as usize);
 
     for idx in 0..*num_threads {
         // Per-thread (local) copies of the work and results pipes => avoid
@@ -418,28 +426,24 @@ pub fn extract(
         let ctarget = target.clone();
         scan_handles.push(
             thread::spawn(move || {
+                let mut retries = TimeoutRetries::new(max_retries);
                 match scan_dirs_worker_thread(
                     name.as_str(), ctarget.as_str(), &loc_dirs,
-                    &loc_compress, prio, plan
+                    &loc_compress, prio, plan, &mut retries
                 ) {
                     Err(e) => {
                         error!("Error from spawned 'scan' thread: '{}'", e);
                         // No more work due to error => terminate pipes
                         Err(e)
                     },
-                    Ok(()) => Ok(())
+                    Ok(()) => Ok(retries)
                 }
             })
         );
     }
 
     info!("... waiting for directories to be scanned ...");
-    for h in scan_handles {
-        h.join().unwrap_or_else( |err| {
-            warn!("Failed thread join: '{:?}'", err);
-            Ok(())
-        })?;
-    }
+    let shard_retries = join_workers(scan_handles)?;
     info!(" ... workers are done scanning directories!");
     pipe_dirs.set_completed()?;
     // The workers (the producers) are joined => their pipe clones are gone.
@@ -469,7 +473,7 @@ pub fn extract(
     let mut extract_handles: Vec<
             JoinHandle<Result<(), ArchiverError<String>>>
         > = Vec::with_capacity(*num_threads as usize);
-    for idx in 0..*num_threads {
+    for (idx, mut retries) in shard_retries.into_iter().enumerate() {
         let name = if *compress {
             format!("{}.{}.tar.gz", archive_name, idx)
         } else {
@@ -483,7 +487,7 @@ pub fn extract(
         extract_handles.push(
             thread::spawn(move || {
                 match extract_worker_thread(
-                    name.as_str(), ctarget.as_str(), &loc_compress
+                    name.as_str(), ctarget.as_str(), &loc_compress, &mut retries
                 ) {
                     Err(e) => {
                         error!("Error from spawned 'extract' thread: '{}'", e);
@@ -497,12 +501,7 @@ pub fn extract(
     }
 
     info!(" ... waiting for workers to finish ...");
-    for h in extract_handles {
-        h.join().unwrap_or_else( |err| {
-            warn!("Failed thread join: '{:?}'", err);
-            Ok(())
-        })?;
-    }
+    join_workers(extract_handles)?;
     info!(" ... workers are done! (PHASE 2)");
 
     info!("FINALIZE: ensuring file and directory permissions match archive.");

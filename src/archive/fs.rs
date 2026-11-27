@@ -4,6 +4,10 @@
 //! tar-header permission modes.
 
 use crate::archive::error::ArchiverError;
+use crate::retry::{RetryReader, TimeoutRetries};
+use flate2::read::GzDecoder;
+use std::collections::HashMap;
+use std::io::{self, BufReader, Read};
 
 // File system
 use std::fs::{Metadata, symlink_metadata};
@@ -15,7 +19,22 @@ use log::warn;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt; 
 // Tar files
-use tar::Header;
+use tar::{Archive, Header};
+
+pub(super) fn open_shard<'a>(
+    path: &'a str,
+    compress: bool,
+    retries: &'a mut TimeoutRetries,
+) -> io::Result<Archive<Box<dyn Read + 'a>>> {
+    let input = RetryReader::open(Path::new(path), retries)?;
+    let buffered = BufReader::with_capacity(1 << 20, input);
+    let reader: Box<dyn Read> = if compress {
+        Box::new(GzDecoder::new(buffered))
+    } else {
+        Box::new(buffered)
+    };
+    Ok(Archive::new(reader))
+}
 
 /// Recursively enumerate everything under `folder_path` (files,
 /// directories, and symlinks — followed if `follow_links`) as path strings.
@@ -44,6 +63,31 @@ pub fn find_files(
     }
 
     Ok(files)
+}
+
+/// A directory iterator may already have yielded part of a listing on timeout.
+/// Start a fresh work list before launching workers, charging the failed path.
+pub(super) fn find_files_with_retries(
+    root: &PathBuf,
+    follow_links: bool,
+    max_retries: Option<u64>,
+) -> Result<Vec<String>, ArchiverError<String>> {
+    let mut budgets = HashMap::new();
+    loop {
+        let error = match find_files(root, follow_links) {
+            Err(ArchiverError::WalkdirError(e)) => e,
+            result => return result,
+        };
+        if let Some(cause) = error.io_error() {
+            let path = error.path().unwrap_or(root);
+            let budget = budgets.entry(path.to_owned())
+                .or_insert_with(|| TimeoutRetries::new(max_retries));
+            if budget.wait(path, cause, &mut std::thread::sleep) {
+                continue;
+            }
+        }
+        return Err(ArchiverError::WalkdirError(error));
+    }
 }
 
 /// Whether `path_str` is a symlink (without following it). Stat failures
@@ -115,6 +159,10 @@ pub fn set_mode_from_path_or_default(header: &mut Header, path: &String) {
         }
     };
 
+    set_mode_from_metadata(header, path.as_ref(), &md);
+}
+
+pub(super) fn set_mode_from_metadata(header: &mut Header, _path: &Path, md: &Metadata) {
     let mode: u32 = {
         #[cfg(unix)]
         {
@@ -122,10 +170,10 @@ pub fn set_mode_from_path_or_default(header: &mut Header, path: &String) {
         }
         #[cfg(not(unix))]
         {
-            let default_mode = default_mode_for_path(&md);
+            let default_mode = default_mode_for_path(md);
             warn!(
                 "'{}' platform has no Unix file mode bits; using defaults: {}",
-                path, mode_to_string(default_mode)
+                _path.display(), mode_to_string(default_mode)
             );
             default_mode
         }

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! End-to-end tests exercising the `parallel-tar` binary (create/extract) and
-//! the library `verify` entry point.
+//! End-to-end tests exercising `parallel-tar` (create/extract), `parallel-idx`,
+//! and the library `verify` entry point.
 //!
 //! NOTE: `create` changes the process working directory, so the binary is
 //! always driven as a subprocess (via `CARGO_BIN_EXE_parallel-tar`) with an
@@ -179,6 +179,30 @@ fn create_extract_roundtrip(name: &str, compress: bool) {
 // ─── Tests ────────────────────────────────────────────────────────────────
 
 #[test]
+fn index_from_tree_accepts_timeout_retry_counts() {
+    let tmp = TestDir::new("index-retries");
+    fs::write(tmp.path().join("file"), b"abc").unwrap();
+    let index = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_parallel-idx"))
+            .args(args)
+            .current_dir(tmp.path())
+            .output()
+            .unwrap()
+    };
+    assert!(index(&["-e", "-f", "tree.etr", "file"]).status.success());
+
+    for (count, exit_code) in [("0", 0), ("3", 0), ("-1", 0), ("-2", 2), ("bad", 2)] {
+        let output = index(&[
+            "-f", "out.idx", "-n", "4", "--retry-on-timeout", count, "-t", "tree.etr",
+        ]);
+        assert_eq!(
+            output.status.code(), Some(exit_code),
+            "--retry-on-timeout {count}: {}", String::from_utf8_lossy(&output.stderr),
+        );
+    }
+}
+
+#[test]
 fn e2e_create_extract_roundtrip() {
     create_extract_roundtrip("roundtrip", false);
 }
@@ -186,6 +210,110 @@ fn e2e_create_extract_roundtrip() {
 #[test]
 fn e2e_create_extract_roundtrip_compressed() {
     create_extract_roundtrip("roundtrip-gz", true);
+}
+
+#[test]
+fn archiving_rejects_a_file_that_changes_length_after_its_header() {
+    struct ResizeOnHeader {
+        file: Option<File>,
+        new_size: u64,
+    }
+    impl Write for ResizeOnHeader {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if let Some(file) = self.file.take() {
+                file.set_len(self.new_size)?;
+            }
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+    }
+
+    use std::io::{ErrorKind, Seek, SeekFrom};
+    let tmp = TestDir::new("source-size");
+    let path = tmp.path().join("source");
+    for (actual, kind) in [
+        (0, ErrorKind::UnexpectedEof),
+        (1023, ErrorKind::UnexpectedEof), // A one-byte loss fits in the same tar block.
+        (1025, ErrorKind::InvalidData),
+    ] {
+        fs::write(&path, [0x42; 1024]).unwrap();
+        let file = File::options().write(true).open(&path).unwrap();
+        let mut tar = tar::Builder::new(ResizeOnHeader { file: Some(file), new_size: actual });
+        let err = tar.append_path_with_name(&path, "source").unwrap_err();
+        assert_eq!(err.kind(), kind);
+        assert!(err.to_string().contains("1024"), "{err}");
+    }
+
+    // On filesystems with GNU sparse support, truncate inside a data extent.
+    let mut file = File::create(&path).unwrap();
+    let hole = 1 << 20;
+    file.seek(SeekFrom::Start(hole)).unwrap();
+    file.write_all(&[0x42; 1024]).unwrap();
+    file.sync_all().unwrap();
+    let mut tar = tar::Builder::new(ResizeOnHeader { file: Some(file), new_size: hole + 1023 });
+    assert_eq!(
+        tar.append_path_with_name(&path, "sparse").unwrap_err().kind(),
+        ErrorKind::UnexpectedEof,
+    );
+}
+
+#[test]
+fn verify_reports_the_shard_offset_and_previous_entry_for_a_missing_payload() {
+    let tmp = TestDir::new("bad-header");
+    let mut shard = File::create(tmp.path().join("backup.0.tar")).unwrap();
+    let mut header = tar::Header::new_gnu();
+    header.set_entry_type(tar::EntryType::Regular);
+    header.set_size(512);
+    for name in ["missing.pdf", "next.pdf"] {
+        header.set_path(name).unwrap();
+        header.set_cksum();
+        shard.write_all(header.as_bytes()).unwrap();
+    }
+    // The second header gets consumed as the first member's payload. The
+    // reader then lands inside the second member while looking for a header.
+    shard.write_all(&[0xff; 512]).unwrap();
+    shard.write_all(&[0; 1024]).unwrap();
+    drop(shard);
+
+    let output = Command::new(bin())
+        .current_dir(tmp.path())
+        .env("RUST_LOG", "off")
+        .args(["-i", "-n", "1", "-f", "verify.idx", "backup"])
+        .output().unwrap();
+    assert!(!output.status.success());
+    let message = String::from_utf8(output.stderr).unwrap();
+    for part in ["backup.0.tar", "after entry \"missing.pdf\"", "checksum field at uncompressed byte 1024"] {
+        assert!(message.contains(part), "{message}");
+    }
+    assert!(!message.contains('\u{fffd}'), "{message}");
+    assert!(!tmp.path().join("verify.idx").exists());
+}
+
+#[test]
+fn archive_retry_option_works_across_create_verify_and_extract() {
+    let tmp = TestDir::new("archive-retries");
+    let cwd = tmp.path();
+    populate_sample_data(cwd);
+    let tree = Command::new(env!("CARGO_BIN_EXE_parallel-idx"))
+        .args(["-e", "-f", "tree.etr", "data"])
+        .current_dir(cwd)
+        .output()
+        .unwrap();
+    assert!(tree.status.success());
+    for invalid in ["-2", "bad"] {
+        let args = ["-ctz", "-n", "2", "--retry-on-timeout", invalid, "-f", "backup/archive", "tree.etr"];
+        run_ptar(cwd, &args, false);
+        assert!(!cwd.join("backup").exists());
+    }
+    let prefix = "backup/archive/archive";
+    let create = ["-ctz", "-n", "2", "--retry-on-timeout", "3", "-f", "backup/archive", "tree.etr"];
+    let verify = ["-iz", "-n", "2", "--retry-on-timeout", "-1", "-f", "verified.idx", prefix];
+    let extract = ["-xz", "-n", "2", "--retry-on-timeout", "0", "-f", prefix, "out"];
+    run_ptar(cwd, &create, true);
+    run_ptar(cwd, &verify, true);
+    fs::create_dir_all(cwd.join("out")).unwrap();
+    run_ptar(cwd, &extract, true);
+    assert_dirs_equal(&cwd.join("data"), &cwd.join("out/data"));
 }
 
 #[test]

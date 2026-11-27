@@ -9,6 +9,8 @@
 //! parallel workers. See the crate-level docs of [`ptar_lib`] for the full
 //! workflow.
 
+mod cli;
+
 // Stdlib
 use std::sync::Arc;
 use std::error::Error;
@@ -18,7 +20,7 @@ use clap::{Arg, Command};
 
 use ptar_lib::index::*;
 use ptar_lib::index::tree::TreeNode;
-use ptar_lib::index::serialize::{DataFmt, save_tree, load_tree};
+use ptar_lib::index::serialize::{DataFmt, save_tree, load_tree_with_retries};
 use ptar_lib::index::display::format_size;
 use ptar_lib::index::error::IndexerError;
 
@@ -41,7 +43,7 @@ fn save(
 }
 
 fn load(
-            json_fmt: &bool, index_path: &String
+            json_fmt: &bool, index_path: &String, max_retries: Option<u64>,
         ) -> Result<Arc<TreeNode>, IndexerError> {
 
     let data_fmt = if * json_fmt {
@@ -51,7 +53,7 @@ fn load(
     };
 
     info!("Loading index at: '{:?}'", data_fmt);
-    load_tree(data_fmt)
+    load_tree_with_retries(data_fmt, max_retries)
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -120,6 +122,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             .required(false)
             .num_args(0)
         )
+        .arg(cli::retry_on_timeout())
         .arg(
             Arg::new("num_threads")
             .short('n')
@@ -153,11 +156,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     let valid_symlinks_only: &bool = get_arg(& args, "valid_symlinks_only")?;
     let tree_only: &bool           = get_arg(& args, "tree_only")?;
     let from_tree: &bool           = get_arg(& args, "from_tree")?;
+    let max_retries = *get_arg::<Option<u64>>(&args, "retry_on_timeout")?;
 
     info!("Building tree for: '{}'", target);
 
     let tree = if *from_tree {
-        load(json_fmt, target)?
+        load(json_fmt, target, max_retries)?
     } else { 
         TreeNode::from_path(&target, *follow_links, *valid_symlinks_only)?
     };
@@ -167,7 +171,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Ok(save(tree, json_fmt, index_path)?);
     }
 
-    // Only need number of threads from now on
     let num_threads: &u32 = get_arg(& args, "num_threads")?;
 
     // Thread pool used for parallel work
@@ -180,8 +183,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let meta = pool.install(|| {tree.compute_metadata()})?;
 
     info!("Filling hashes ...");
-    // Compute file hashes 
-    let n_filled = pool.install(|| tree.fill_hashes(*use_md5))?;
+    let n_filled = pool.install(|| tree.fill_hashes_with_retries(*use_md5, max_retries))?;
     info!("Hashed {} files from disk", n_filled);
 
     info!("Computing hash tree ...");

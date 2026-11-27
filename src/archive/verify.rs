@@ -11,19 +11,19 @@
 
 use crate::archive::error::{ArchiverError, Relabel};
 use crate::archive::mutex::Pipe;
+use crate::archive::fs::open_shard;
+use crate::archive::join_workers;
+use crate::retry::TimeoutRetries;
 use crate::files::path::sanitize_rel_path;
 use crate::index::tree::{TreeNode, NodeType};
 use crate::index::crypto::{hash_reader_md5, hash_reader_sha256};
 
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::thread::{self, JoinHandle};
 
-use flate2::read::GzDecoder;
-use tar::{Archive, EntryType};
+use tar::EntryType;
 
 use log::{debug, error, info, warn};
 
@@ -62,21 +62,25 @@ fn scan_worker_thread(
     compress: bool,
     use_md5:  bool,
     pipe:     &Pipe<ScannedEntry>,
+    max_retries: Option<u64>,
 ) -> Result<(), ArchiverError<ScannedEntry>> {
-    let input = File::open(tar_path)?;
-    let buffered = BufReader::with_capacity(1 << 20, input);
-    let reader: Box<dyn Read> = if compress {
-        Box::new(GzDecoder::new(buffered))
-    } else {
-        Box::new(buffered)
-    };
-
-    let mut archive = Archive::new(reader);
+    let mut retries = TimeoutRetries::new(max_retries);
+    let mut archive = open_shard(tar_path, compress, &mut retries)?;
     archive.set_preserve_permissions(false);
     archive.set_unpack_xattrs(false);
 
+    let mut previous_path = PathBuf::new();
     for entry_res in archive.entries()? {
-        let mut entry = entry_res?;
+        let mut entry = entry_res.map_err(|e| {
+            let context = if previous_path.as_os_str().is_empty() {
+                String::new()
+            } else {
+                format!(" after entry {previous_path:?}")
+            };
+            std::io::Error::new(
+                e.kind(), format!("reading header in shard {tar_path:?}{context}: {e}"),
+            )
+        })?;
         let header   = entry.header().clone();
         let ent_type = header.entry_type();
 
@@ -86,6 +90,7 @@ fn scan_worker_thread(
         };
         let Some(rel) = rel else {
             warn!("Skipping unsafe path in '{}': {:?}", tar_path, entry.path());
+            previous_path.clear();
             continue;
         };
 
@@ -178,6 +183,7 @@ fn scan_worker_thread(
         // Drain any unread bytes so the tar reader advances to the next header.
         std::io::copy(&mut entry, &mut std::io::sink())?;
 
+        previous_path.clone_from(&rel);
         let scanned = ScannedEntry { rel_path: rel, kind, hash, size };
         pipe.send(scanned)?;
     }
@@ -208,6 +214,18 @@ pub fn verify(
     use_md5:      &bool,
     root_prefix:  Option<&Path>,
 ) -> Result<Arc<TreeNode>, ArchiverError<String>> {
+    verify_with_retries(archive_name, num_threads, compress, use_md5, root_prefix, Some(0))
+}
+
+/// Like [`verify`], with a timeout retry limit per input shard (`None` for unlimited).
+pub fn verify_with_retries(
+    archive_name: &String,
+    num_threads: &u32,
+    compress: &bool,
+    use_md5: &bool,
+    root_prefix: Option<&Path>,
+    max_retries: Option<u64>,
+) -> Result<Arc<TreeNode>, ArchiverError<String>> {
     let mut pipe = Pipe::<ScannedEntry>::new();
     let loc_compress = *compress;
     let loc_use_md5  = *use_md5;
@@ -229,7 +247,7 @@ pub fn verify(
 
         handles.push(thread::spawn(move || {
             match scan_worker_thread(
-                name.as_str(), loc_compress, loc_use_md5, &loc_pipe,
+                name.as_str(), loc_compress, loc_use_md5, &loc_pipe, max_retries,
             ) {
                 Err(e) => {
                     error!("Error from spawned 'verify' thread: '{}'", e);
@@ -242,12 +260,7 @@ pub fn verify(
     }
 
     info!(" ... waiting for workers to finish scanning ...");
-    for h in handles {
-        h.join().unwrap_or_else(|err| {
-            warn!("Failed thread join: '{:?}'", err);
-            Ok(())
-        }).map_err(Relabel::<String>::relabel)?;
-    }
+    join_workers(handles).map_err(Relabel::<String>::relabel)?;
     info!(" ... workers are done!");
     pipe.set_completed().map_err(Relabel::<String>::relabel)?;
     // The workers (the producers) are joined => their pipe clones are gone.

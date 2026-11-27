@@ -6,7 +6,7 @@
 //! filesystem a second time, the archiver replays the paths recorded in an
 //! index (typically an "empty tree" `.etr` produced by `parallel-idx -e`).
 
-use crate::index::serialize::{DataFmt, load_tree};
+use crate::index::serialize::{DataFmt, load_tree_with_retries};
 use crate::index::tree::NodeType;
 use crate::files::path::analyze_path;
 
@@ -28,7 +28,12 @@ use std::path::PathBuf;
 pub fn files_from_tree(
             json_fmt: &bool, index_path: &String
         ) -> Result<(Option<PathBuf>, Vec<String>), Error> {
+    files_from_tree_with_retries(json_fmt, index_path, Some(0))
+}
 
+pub(crate) fn files_from_tree_with_retries(
+    json_fmt: &bool, index_path: &String, max_retries: Option<u64>,
+) -> Result<(Option<PathBuf>, Vec<String>), Error> {
     let data_fmt = if * json_fmt {
         DataFmt::Json(index_path.to_string())
     } else {
@@ -36,10 +41,10 @@ pub fn files_from_tree(
     };
 
     info!("Loading index at: '{:?}'", data_fmt);
-    let tree = match load_tree(data_fmt) {
+    let tree = match load_tree_with_retries(data_fmt, max_retries) {
         Ok(t) => t,
-        Err(_) => return Err(Error::new(
-            std::io::ErrorKind::InvalidData, "Cannot load tree"
+        Err(e) => return Err(Error::new(
+            std::io::ErrorKind::InvalidData, format!("Cannot load tree {index_path:?}: {e}")
         ))
     };
 

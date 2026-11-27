@@ -92,6 +92,15 @@ Root hash: '2ad978a95789be738d31cd9eac89519957f35d2f730a346c715e05f3355e70ab'
 [2026-02-22T11:11:42Z INFO  parallel_idx] Saving index: 'Idx("example.idx")'
 ```
 
+For intermittent timeouts when hashing files, add `--retry-on-timeout N`.
+For example, `parallel-idx -n 4 --retry-on-timeout 3 -f example.idx -t example.etr`
+allows up to three extra attempts per file. Each retry reopens the file and hashes
+it from the beginning. The delay starts at one second and doubles up to 30 seconds.
+Set `RUST_LOG=debug` or `RUST_LOG=trace` to see the path, retry number, and delay.
+The default (`0`) makes one attempt. Use `-1` to keep retrying for as long as the
+file open or read keeps timing out. If a file remains unhashed after the retries,
+or another I/O error prevents hashing, the command exits without saving the index.
+
 ### Generate archive from directory tree
 
 In this example, we are using the tree file (`example.etr`) to construct a
@@ -99,6 +108,26 @@ compressed archive from the paths located therein. Splitting up the process
 into: 1. Generate tree; 2. Generate index; 3. Generate archive saves us from
 having to walk the directory tree twice (to generate the index, and the
 archive).
+
+`parallel-tar` accepts the same `--retry-on-timeout N` setting. For example,
+`parallel-tar -c -z -n 4 --retry-on-timeout 3 -f example -t example.etr`
+allows three extra attempts per source entry. With retries enabled, the worker
+computes a SHA-256 digest as it writes each entry. On a mid-entry timeout, it
+reopens the source and checks the bytes it already wrote before appending the
+remainder. This also works with gzip and sparse entries.
+Each worker names its shard `.tar` or `.tar.gz` once it finishes writing it.
+A shard that fails partway keeps its `.partial` suffix. Exhausting an enabled
+retry limit fails the command. Creation also fails if the source ends before
+the byte count in its tar header, even when the filesystem reports a successful read.
+
+The setting also covers reading a supplied tree file. When creating an archive
+directly from a directory, a timeout during enumeration restarts the walk
+before any worker writes entries.
+
+During extraction (`-x`) and verification (`-i`), the limit applies per input
+shard. A retry resumes at the last successful read position. Both extraction
+passes share the shard's limit. Set `RUST_LOG=info,ptar_lib::retry=debug`
+to see scheduled retries alongside the usual progress messages.
 
 >[!IMPORTANT]
 > Using empty tree files (`.etr`) to generate the archive means that if the
@@ -199,12 +228,12 @@ means you can verify the archive end-to-end **without extracting it to disk**:
   buffers.
 * The resulting tree is assembled in memory and saved as an `.idx`.
 
-The flags mirror the create/extract path: `-z` for compressed archives,
-`-n` for thread count, `-f` for the archive directory.
+Use `-f` for the output index and pass the shard prefix as the positional
+argument. Use `-z` for gzip and set `-n` to the number of shards.
 
 ```text
-$ parallel-tar -i -z -n 16 -f /scratch/user/Archive/example -o example.verify.idx
-[2026-02-23T08:15:02Z INFO  ptar_lib::archive::verify] SETUP: Starting 16 worker threads to scan '/scratch/user/Archive/example'
+$ parallel-tar -i -z -n 16 -f example.verify.idx /scratch/user/Archive/example/example
+[2026-02-23T08:15:02Z INFO  ptar_lib::archive::verify] SETUP: Starting 16 worker threads to scan '/scratch/user/Archive/example/example'
 [2026-02-23T08:15:02Z INFO  ptar_lib::archive::verify] Starting worker thread: 0 scanning '/scratch/user/Archive/example/example.0.tar.gz'
 [2026-02-23T08:15:02Z INFO  ptar_lib::archive::verify] Starting worker thread: 1 scanning '/scratch/user/Archive/example/example.1.tar.gz'
 ...
@@ -232,7 +261,7 @@ generated from the live tree — the archive is byte-for-byte sound.
 > prepend the original prefix:
 >
 > ```text
-> $ parallel-tar -V -z -n 16 -f example -r /global/projects -o example.verify.idx
+> $ parallel-tar -i -z -n 16 -r /global/projects -f example.verify.idx /scratch/user/Archive/example/example
 > ```
 >
 > Without `-r`, paths in the verify `.idx` will be tar-relative, which is still

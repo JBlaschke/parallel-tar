@@ -487,7 +487,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "parallel-tar"
-version = "4.2.0"
+version = "4.2.1"
 dependencies = [
  "cfg-if",
  "clap",
@@ -746,8 +746,6 @@ dependencies = [
 [[package]]
 name = "tar"
 version = "0.4.46"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f6221d9a6003c78398e3b239969f352578258df48c8eb051caadae0015bc840"
 dependencies = [
  "filetime",
  "libc",

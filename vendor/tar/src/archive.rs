@@ -319,9 +319,17 @@ impl<'a> EntriesFields<'a> {
             .chain(&header.as_bytes()[156..])
             .fold(0, |a, b| a + (*b as u32))
             + 8 * 32;
-        let cksum = header.cksum()?;
+        let cksum = header.cksum().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid tar header checksum field at uncompressed byte {header_pos}"),
+            )
+        })?;
         if sum != cksum {
-            return Err(other("archive header checksum mismatch"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("archive header checksum mismatch at uncompressed byte {header_pos}"),
+            ));
         }
 
         // PAX extensions describe the *next file entry*, not intermediary

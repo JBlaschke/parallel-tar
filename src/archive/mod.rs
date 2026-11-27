@@ -20,3 +20,15 @@ pub mod tar;
 pub mod mutex;
 pub mod error;
 pub mod verify;
+mod entry;
+
+/// Join every worker before returning an error so none continues to write in the background.
+fn join_workers<T, E>(workers: Vec<std::thread::JoinHandle<Result<T, E>>>) -> Result<Vec<T>, E>
+where
+    E: From<std::io::Error>,
+{
+    let results: Vec<_> = workers.into_iter().map(|worker| {
+        worker.join().unwrap_or_else(|_| Err(std::io::Error::other("archive worker panicked").into()))
+    }).collect();
+    results.into_iter().collect()
+}

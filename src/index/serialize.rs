@@ -11,11 +11,12 @@
 
 use crate::index::tree::{TreeNode, NodeType, NodeMetadata};
 use crate::index::error::IndexerError;
+use crate::retry::{RetryReader, TimeoutRetries};
 
 use std::sync::Arc;
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json;
 use rmp_serde;
@@ -135,14 +136,6 @@ fn save_tree_json(tree: &TreeNode, path: &str) -> Result<(), IndexerError> {
     Ok(())
 }
 
-// Deserialize from JSON
-fn load_tree_json(path: &str) -> Result<Arc<TreeNode>, IndexerError> {
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
-    let serializable: SerializedTreeNode = serde_json::from_reader(reader)?;
-    Ok(TreeNode::from_serializable(serializable))
-}
-
 // Serialize to Message Pack
 fn save_tree_rmp(tree: &TreeNode, path: &str) -> Result<(), IndexerError> {
     let file = File::create(path)?;
@@ -150,14 +143,6 @@ fn save_tree_rmp(tree: &TreeNode, path: &str) -> Result<(), IndexerError> {
     let serializable = tree.to_serializable()?;
     rmp_serde::encode::write(&mut writer, &serializable)?;
     Ok(())
-}
-
-// Deserialize from Message Pack
-fn load_tree_rmp(path: &str) -> Result<Arc<TreeNode>, IndexerError> {
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
-    let serializable: SerializedTreeNode = rmp_serde::decode::from_read(reader)?;
-    Ok(TreeNode::from_serializable(serializable))
 }
 
 /// Write `tree` to the path and format named by `fmt`, overwriting any
@@ -171,8 +156,20 @@ pub fn save_tree(tree: &TreeNode, fmt: DataFmt) -> Result<(), IndexerError> {
 
 /// Read an index tree from the path and format named by `fmt`.
 pub fn load_tree(fmt: DataFmt) -> Result<Arc<TreeNode>, IndexerError> {
-    match fmt {
-        DataFmt::Json(path) => load_tree_json(& path),
-        DataFmt::Idx(path)  => load_tree_rmp(& path)
-    }
+    load_tree_with_retries(fmt, Some(0))
+}
+
+/// Read an index tree with a timeout retry limit for opening and reading the input file.
+pub fn load_tree_with_retries(
+    fmt: DataFmt,
+    max_retries: Option<u64>,
+) -> Result<Arc<TreeNode>, IndexerError> {
+    let (DataFmt::Json(path) | DataFmt::Idx(path)) = &fmt;
+    let mut retries = TimeoutRetries::new(max_retries);
+    let reader = BufReader::new(RetryReader::open(Path::new(path), &mut retries)?);
+    let serializable = match fmt {
+        DataFmt::Json(_) => serde_json::from_reader(reader)?,
+        DataFmt::Idx(_) => rmp_serde::decode::from_read(reader)?,
+    };
+    Ok(TreeNode::from_serializable(serializable))
 }
